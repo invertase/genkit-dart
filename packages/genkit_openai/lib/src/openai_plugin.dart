@@ -305,6 +305,25 @@ class OpenAIPlugin extends GenkitPlugin {
         try {
           final supports = modelInfo.supports;
           final supportsTools = supports?['tools'] == true;
+
+          final isJsonMode =
+              req.output?.format == 'json' ||
+              req.output?.contentType == 'application/json';
+          final defs = req.output?.schema?['\$defs'] as Map<String, dynamic>? ?? {};
+          final schemaShell = defs.values.first as Map<String, dynamic>;
+          final schemaWithType = {
+            ...schemaShell,
+            'additionalProperties': false,
+          };
+          final responseFormat = isJsonMode ? ResponseFormat.jsonSchema(
+            jsonSchema: JsonSchemaObject(
+              name: defs.keys.first,
+              schema: schemaWithType,
+              strict: true
+            ),
+          ) : null;
+          print('responseFormat: ${jsonEncode(responseFormat?.toJson())}\n\n');
+
           final request = CreateChatCompletionRequest(
             model: ChatCompletionModel.modelId(options.version ?? modelName),
             messages: GenkitConverter.toOpenAIMessages(
@@ -324,12 +343,9 @@ class OpenAIPlugin extends GenkitPlugin {
             frequencyPenalty: options.frequencyPenalty,
             seed: options.seed,
             user: options.user,
-            responseFormat: options.jsonMode == true
-                ? const ResponseFormat.jsonObject()
-                : null,
+            responseFormat: isJsonMode ? responseFormat : null,
           );
-
-          if (ctx.streamingRequested) {
+          if (ctx.streamingRequested && options.stream != null && options.stream!) {
             return await _handleStreaming(client, request, ctx);
           } else {
             return await _handleNonStreaming(client, request);

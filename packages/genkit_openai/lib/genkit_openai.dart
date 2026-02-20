@@ -62,6 +62,9 @@ abstract class $OpenAIOptions {
   /// Visual detail level for images ('auto', 'low', 'high')
   @StringField(enumValues: ['auto', 'low', 'high'])
   String? get visualDetailLevel;
+
+  /// Whether to stream the response
+  bool? get stream;
 }
 
 /// Custom model definition for registering models from compatible providers

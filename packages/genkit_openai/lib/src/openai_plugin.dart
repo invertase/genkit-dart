@@ -20,7 +20,6 @@ import 'package:openai_dart/openai_dart.dart' hide Model;
 import '../genkit_openai.dart';
 
 String _repairPartialJson(String partial) {
-  print(partial);
   if (partial.isEmpty) return partial;
 
   final trimmed = partial.trim();

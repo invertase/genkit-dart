@@ -19,6 +19,79 @@ import 'package:openai_dart/openai_dart.dart' hide Model;
 
 import '../genkit_openai.dart';
 
+String _repairPartialJson(String partial) {
+  print(partial);
+  if (partial.isEmpty) return partial;
+
+  final trimmed = partial.trim();
+  if (trimmed.isEmpty) return partial;
+
+  final stack = <String>[];
+  var inString = false;
+  var escaped = false;
+  var lastUnclosedStringWasKey = false;
+
+  for (var i = 0; i < partial.length; i++) {
+    final char = partial[i];
+
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+
+    if (char == '\\' && inString) {
+      escaped = true;
+      continue;
+    }
+
+    if (char == '"') {
+      if (!inString) {
+        var j = i - 1;
+        while (j >= 0 &&
+            (partial[j] == ' ' ||
+                partial[j] == '\t' ||
+                partial[j] == '\n' ||
+                partial[j] == '\r')) {
+          j--;
+        }
+        lastUnclosedStringWasKey =
+            j < 0 || partial[j] == '{' || partial[j] == ',';
+      }
+      inString = !inString;
+      continue;
+    }
+
+    if (!inString) {
+      if (char == '{' || char == '[') {
+        stack.add(char == '{' ? '}' : ']');
+      } else if (char == '}' || char == ']') {
+        if (stack.isNotEmpty) {
+          stack.removeLast();
+        }
+      }
+    }
+  }
+
+  final buffer = StringBuffer(partial);
+
+  if (inString) {
+    buffer.write('"');
+    // Closing an unclosed string that was a key produces "{"" or ",key"" which
+    // is invalid (key with no value). Add ": null" only in that case.
+    if (stack.isNotEmpty &&
+        stack.last == '}' &&
+        lastUnclosedStringWasKey) {
+      buffer.write(': null');
+    }
+  }
+
+  while (stack.isNotEmpty) {
+    buffer.write(stack.removeLast());
+  }
+
+  return buffer.toString();
+}
+
 /// Internal tool call accumulator for streaming responses
 class _ToolCallAccumulator {
   String id;
@@ -322,7 +395,6 @@ class OpenAIPlugin extends GenkitPlugin {
               strict: true
             ),
           ) : null;
-          print('responseFormat: ${jsonEncode(responseFormat?.toJson())}\n\n');
 
           final request = CreateChatCompletionRequest(
             model: ChatCompletionModel.modelId(options.version ?? modelName),
@@ -343,10 +415,17 @@ class OpenAIPlugin extends GenkitPlugin {
             frequencyPenalty: options.frequencyPenalty,
             seed: options.seed,
             user: options.user,
-            responseFormat: isJsonMode ? responseFormat : null,
+            responseFormat: responseFormat,
           );
-          if (ctx.streamingRequested && options.stream != null && options.stream!) {
-            return await _handleStreaming(client, request, ctx);
+          if (ctx.streamingRequested &&
+              options.stream != null &&
+              options.stream!) {
+            return await _handleStreaming(
+              client,
+              request,
+              ctx,
+              isJsonMode: isJsonMode,
+            );
           } else {
             return await _handleNonStreaming(client, request);
           }
@@ -390,8 +469,9 @@ class OpenAIPlugin extends GenkitPlugin {
       Stream<ModelRequest>? inputStream,
       void init,
     })
-    ctx,
-  ) async {
+    ctx, {
+    bool isJsonMode = false,
+  }) async {
     final stream = client.createChatCompletionStream(request: request);
 
     final contentBuffer = StringBuffer();
@@ -411,7 +491,15 @@ class OpenAIPlugin extends GenkitPlugin {
         // Handle text content
         if (delta.content != null) {
           contentBuffer.write(delta.content);
-          parts.add(TextPart(text: delta.content!));
+
+          if (isJsonMode) {
+            final repairedJson = _repairPartialJson(contentBuffer.toString());
+            if (repairedJson.isNotEmpty) {
+              parts.add(TextPart(text: repairedJson));
+            }
+          } else {
+            parts.add(TextPart(text: delta.content!));
+          }
         }
 
         // Handle tool calls (accumulated across chunks)

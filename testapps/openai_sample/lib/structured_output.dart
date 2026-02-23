@@ -94,6 +94,9 @@ Flow<MovieReviewInput, MovieReview, String, void> defineStreamedStructuredOutput
         prompt: 'Write a detailed review of the movie "${input.title}$yearClause".',
         outputFormat: 'json',
         outputSchema: MovieReview.$schema,
+        config: {
+          'stream': true,
+        }
       );
 
       await for (final chunk in stream) {

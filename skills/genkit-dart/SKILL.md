@@ -1,6 +1,6 @@
 ---
 name: genkit-dart
-description: Instructions and resources for building applications using the Genkit Dart framework and its plugins.
+description: Instructions and resources for building applications using the Genkit Dart framework -- general purpose, multi-model Generative AI SDK for Dart.
 ---
 
 # Genkit Dart
@@ -48,4 +48,8 @@ When asked to use any given plugin, always verify usage by referring to its corr
 
 ## External Dependencies
 Whenever you define schemas mapping inside of Tools, Flows, and Prompts, you must use the [schemantic](https://pub.dev/packages/schemantic) library. 
-To learn how to use schemantic, ensure you read the `schemantic` skill for how to implement type safe generated Dart code.
+To learn how to use schemantic, ensure you read the `schemantic` skill for how to implement type safe generated Dart code. This is particularly relevant when you encounter symbols like `@Schematic()`, `stringSchema()`, `intSchema()`, `mapSchema()`, or classes with the `$` prefix. Genkit Dart uses schemantic for all of its data models so it's a CRITICAL skill to understand for using Genkit Dart.
+
+## Best Practices
+- Always check that code cleanly compiles using `dart analyze` before generating the final response.
+- Always use the Genkit CLI for local development and debugging.

@@ -169,7 +169,7 @@ class OpenAIOptions {
       _json['user'] = value;
     }
   }
-  
+
   bool? get jsonMode {
     return _json['jsonMode'] as bool?;
   }

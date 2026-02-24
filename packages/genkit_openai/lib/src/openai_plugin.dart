@@ -18,6 +18,33 @@ import 'package:openai_dart/openai_dart.dart' hide Model;
 import '../genkit_openai.dart';
 import 'aggregation.dart';
 
+/// Returns true when the output config indicates JSON-structured output
+/// (format is 'json' or contentType is 'application/json').
+bool isJsonStructuredOutput(String? format, String? contentType) {
+  return format == 'json' || contentType == 'application/json';
+}
+
+/// Builds an OpenAI [ResponseFormat] from a Genkit output schema that uses
+/// `$defs` and a top-level `$ref`. Returns null if [schema] is null or
+/// has no definitions (empty `$defs`).
+ResponseFormat? buildOpenAIResponseFormat(Map<String, dynamic>? schema) {
+  if (schema == null) return null;
+  final defs = schema[r'$defs'] as Map<String, dynamic>? ?? {};
+  if (defs.isEmpty) return null;
+  final schemaShell = defs.values.first as Map<String, dynamic>;
+  final schemaWithType = {
+    ...schemaShell,
+    'additionalProperties': false,
+  };
+  return ResponseFormat.jsonSchema(
+    jsonSchema: JsonSchemaObject(
+      name: defs.keys.first,
+      schema: schemaWithType,
+      strict: true,
+    ),
+  );
+}
+
 /// Core plugin implementation
 class OpenAIPlugin extends GenkitPlugin {
   @override
@@ -277,25 +304,12 @@ class OpenAIPlugin extends GenkitPlugin {
           final supports = modelInfo.supports;
           final supportsTools = supports?['tools'] == true;
 
-          final isJsonMode =
-              req.output?.format == 'json' ||
-              req.output?.contentType == 'application/json';
-          final defs =
-              req.output?.schema?['\$defs'] as Map<String, dynamic>? ?? {};
-          final schemaShell = defs.values.first as Map<String, dynamic>;
-          final schemaWithType = {
-            ...schemaShell,
-            'additionalProperties': false,
-          };
-          final responseFormat = isJsonMode
-              ? ResponseFormat.jsonSchema(
-                  jsonSchema: JsonSchemaObject(
-                    name: defs.keys.first,
-                    schema: schemaWithType,
-                    strict: true,
-                  ),
-                )
-              : null;
+          final isJsonMode = isJsonStructuredOutput(
+            req.output?.format,
+            req.output?.contentType,
+          );
+          final responseFormat =
+              buildOpenAIResponseFormat(req.output?.schema);
           final request = CreateChatCompletionRequest(
             model: ChatCompletionModel.modelId(options.version ?? modelName),
             messages: GenkitConverter.toOpenAIMessages(

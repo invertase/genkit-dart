@@ -142,54 +142,58 @@ void main() {
       skip: apiKey == null || apiKey.isEmpty ? 'OPENAI_API_KEY not set' : null,
     );
 
-    test(
-      'structured output',
-      () async {
-        if (apiKey == null || apiKey.isEmpty) {
-          fail(
-            'OPENAI_API_KEY environment variable must be set to run integration tests',
+    group('Structured output', () {
+      test(
+        'non-streaming: outputSchema parses response to schema type',
+        () async {
+          if (apiKey == null || apiKey.isEmpty) {
+            fail(
+              'OPENAI_API_KEY environment variable must be set to run integration tests',
+            );
+          }
+
+          final ai = Genkit(plugins: [openAI(apiKey: apiKey)]);
+
+          final response = await ai.generate(
+            model: openAI.model('gpt-4o'),
+            prompt: 'Generate a person named John Doe, age 30',
+            outputSchema: PersonSchema.$schema,
           );
-        }
 
-        final ai = Genkit(plugins: [openAI(apiKey: apiKey)]);
+          expect(response.output, isNotNull);
+          expect(response.output, isA<PersonSchema>());
+          expect(response.output!.name, 'John Doe');
+          expect(response.output!.age, 30);
+        },
+        skip: apiKey == null || apiKey.isEmpty ? 'OPENAI_API_KEY not set' : null,
+      );
 
-        final response = await ai.generate(
-          model: openAI.model('gpt-4o'),
-          prompt: 'Generate a person named John Doe, age 30',
-          outputSchema: PersonSchema.$schema,
-        );
+      test(
+        'streaming: outputSchema parses streamed response to schema type',
+        () async {
+          if (apiKey == null || apiKey.isEmpty) {
+            fail(
+              'OPENAI_API_KEY environment variable must be set to run integration tests',
+            );
+          }
 
-        expect(response.output, isNotNull);
-        expect(response.output!.name, 'John Doe');
-        expect(response.output!.age, 30);
-      },
-      skip: apiKey == null || apiKey.isEmpty ? 'OPENAI_API_KEY not set' : null,
-    );
+          final ai = Genkit(plugins: [openAI(apiKey: apiKey)]);
 
-    test(
-      'streaming structured output',
-      () async {
-        if (apiKey == null || apiKey.isEmpty) {
-          fail(
-            'OPENAI_API_KEY environment variable must be set to run integration tests',
+          final response = ai.generateStream(
+            model: openAI.model('gpt-4o'),
+            prompt: 'Generate a person named Jane Doe, age 25',
+            outputSchema: PersonSchema.$schema,
           );
-        }
 
-        final ai = Genkit(plugins: [openAI(apiKey: apiKey)]);
-
-        final response = ai.generateStream(
-          model: openAI.model('gpt-4o'),
-          prompt: 'Generate a person named Jane Doe, age 25',
-          outputSchema: PersonSchema.$schema,
-        );
-
-        final finalResponse = await response.onResult;
-        expect(finalResponse.output, isNotNull);
-        expect(finalResponse.output!.name, 'Jane Doe');
-        expect(finalResponse.output!.age, 25);
-      },
-      skip: apiKey == null || apiKey.isEmpty ? 'OPENAI_API_KEY not set' : null,
-    );
+          final finalResponse = await response.onResult;
+          expect(finalResponse.output, isNotNull);
+          expect(finalResponse.output, isA<PersonSchema>());
+          expect(finalResponse.output!.name, 'Jane Doe');
+          expect(finalResponse.output!.age, 25);
+        },
+        skip: apiKey == null || apiKey.isEmpty ? 'OPENAI_API_KEY not set' : null,
+      );
+    });
 
     test(
       'multi-turn conversation',

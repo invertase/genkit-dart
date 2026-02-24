@@ -1,3 +1,15 @@
+## 0.0.1-dev.7
+
+ - **REFACTOR**: Introduce a dedicated plugin.dart entry point for plugin-related exports (#149).
+
+## 0.0.1-dev.6
+
+ - Update a dependency to the latest release.
+
+## 0.0.1-dev.5
+
+ - Update a dependency to the latest release.
+
 ## 0.0.1-dev.4
 
  - **FEAT**: add language config options to Chrome plugin (#123).

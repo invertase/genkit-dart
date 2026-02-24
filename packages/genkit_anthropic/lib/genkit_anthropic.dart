@@ -12,21 +12,29 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-import 'package:genkit/genkit.dart';
+import 'package:genkit/plugin.dart';
 import 'src/model.dart';
 import 'src/plugin_impl.dart';
 
 export 'src/model.dart';
 
+/// An instance of [AnthropicPluginHandle] that provides entry points into the plugin.
 const AnthropicPluginHandle anthropic = AnthropicPluginHandle();
 
+/// Plugin handle for the Genkit Anthropic integration.
 class AnthropicPluginHandle {
+  /// Internal constructor. Use the exported [anthropic] instance.
   const AnthropicPluginHandle();
 
+  /// Initializes the Anthropic plugin for use with Genkit.
+  ///
+  /// You can optionally provide an [apiKey]. If omitted, it will be mapped
+  /// to the standard `ANTHROPIC_API_KEY` environment variable.
   GenkitPlugin call({String? apiKey}) {
     return AnthropicPluginImpl(apiKey: apiKey);
   }
 
+  /// Returns a [ModelRef] for the specified Anthropic model [name].
   ModelRef<AnthropicOptions> model(String name) {
     return modelRef('anthropic/$name', customOptions: AnthropicOptions.$schema);
   }

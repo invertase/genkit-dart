@@ -12,13 +12,20 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+// ignore_for_file: invalid_use_of_visible_for_testing_member, deprecated_member_use
+
 import 'dart:convert';
 
-import 'package:firebase_ai/firebase_ai.dart' as m;
-import 'package:genkit/genkit.dart';
+import 'package:firebase_ai/firebase_ai.dart' as fai;
+import 'package:firebase_app_check/firebase_app_check.dart' as fac;
+import 'package:firebase_auth/firebase_auth.dart' as fauth;
+import 'package:firebase_core/firebase_core.dart' as fcore;
+import 'package:genkit/plugin.dart';
 import 'package:logging/logging.dart';
 import 'package:meta/meta.dart';
 import 'package:schemantic/schemantic.dart';
+
+import 'src/aggregation.dart';
 
 part 'genkit_firebase_ai.g.dart';
 
@@ -38,6 +45,18 @@ abstract class $GeminiOptions {
   Map<String, dynamic>? get responseSchema;
   Map<String, dynamic>? get responseJsonSchema;
   $ThinkingConfig? get thinkingConfig;
+  int? get candidateCount;
+  bool? get codeExecution;
+  $FunctionCallingConfig? get functionCallingConfig;
+  bool? get responseLogprobs;
+  int? get logprobs;
+}
+
+@Schematic()
+abstract class $FunctionCallingConfig {
+  @StringField(enumValues: ['MODE_UNSPECIFIED', 'AUTO', 'ANY', 'NONE'])
+  String? get mode;
+  List<String>? get allowedFunctionNames;
 }
 
 @Schematic()
@@ -79,8 +98,18 @@ const FirebaseGenAiPluginHandle firebaseAI = FirebaseGenAiPluginHandle();
 class FirebaseGenAiPluginHandle {
   const FirebaseGenAiPluginHandle();
 
-  GenkitPlugin call() {
-    return _FirebaseGenAiPlugin();
+  GenkitPlugin call({
+    fcore.FirebaseApp? app,
+    fac.FirebaseAppCheck? appCheck,
+    fauth.FirebaseAuth? auth,
+    bool? useLimitedUseAppCheckTokens,
+  }) {
+    return _FirebaseGenAiPlugin(
+      app: app,
+      appCheck: appCheck,
+      auth: auth,
+      useLimitedUseAppCheckTokens: useLimitedUseAppCheckTokens,
+    );
   }
 
   /// Ref to a model in the Firebase AI plugin.
@@ -92,10 +121,23 @@ class FirebaseGenAiPluginHandle {
 }
 
 class _FirebaseGenAiPlugin extends GenkitPlugin {
+  final fcore.FirebaseApp? _app;
+  final fac.FirebaseAppCheck? _appCheck;
+  final fauth.FirebaseAuth? _auth;
+  final bool? _useLimitedUseAppCheckTokens;
+
   @override
   String get name => 'firebaseai';
 
-  _FirebaseGenAiPlugin();
+  _FirebaseGenAiPlugin({
+    fcore.FirebaseApp? app,
+    fac.FirebaseAppCheck? appCheck,
+    fauth.FirebaseAuth? auth,
+    bool? useLimitedUseAppCheckTokens,
+  }) : _app = app,
+       _appCheck = appCheck,
+       _auth = auth,
+       _useLimitedUseAppCheckTokens = useLimitedUseAppCheckTokens;
 
   @override
   Future<List<Action>> init() async {
@@ -117,81 +159,102 @@ class _FirebaseGenAiPlugin extends GenkitPlugin {
     return Model(
       name: 'firebaseai/$modelName',
       fn: (req, ctx) async {
-        if (req == null) throw ArgumentError('Request cannot be null');
-        final instance = m.FirebaseAI.googleAI();
+        final isJsonMode =
+            req!.output?.format == 'json' ||
+            req.output?.contentType == 'application/json';
+
+        final options = req.config == null
+            ? GeminiOptions()
+            : GeminiOptions.$schema.parse(req.config!);
+
+        final instance = fai.FirebaseAI.googleAI(
+          app: _app,
+          appCheck: _appCheck,
+          auth: _auth,
+          useLimitedUseAppCheckTokens: _useLimitedUseAppCheckTokens,
+        );
         final model = instance.generativeModel(
           model: modelName,
-          generationConfig: m.GenerationConfig(
-            candidateCount: req.config?['candidateCount'] as int?,
-            stopSequences: (req.config?['stopSequences'] as List?)
-                ?.cast<String>(),
-            maxOutputTokens: req.config?['maxOutputTokens'] as int?,
-            temperature: (req.config?['temperature'] as num?)?.toDouble(),
-            topP: (req.config?['topP'] as num?)?.toDouble(),
-            topK: req.config?['topK'] as int?,
-            presencePenalty: (req.config?['presencePenalty'] as num?)
-                ?.toDouble(),
-            frequencyPenalty: (req.config?['frequencyPenalty'] as num?)
-                ?.toDouble(),
-            responseModalities: (req.config?['responseModalities'] as List?)
-                ?.map((e) => m.ResponseModalities.values.byName(e as String))
-                .toList(),
-            responseMimeType: req.config?['responseMimeType'] as String?,
-            responseSchema: req.config?['responseSchema'] != null
-                ? toGeminiSchema(
-                    req.config!['responseSchema'] as Map<String, dynamic>,
-                  )
-                : null,
-            responseJsonSchema:
-                req.config?['responseJsonSchema'] as Map<String, dynamic>?,
-            thinkingConfig: req.config?['thinkingConfig'] != null
-                ?
-                  // ignore: deprecated_member_use
-                  m.ThinkingConfig(
-                    thinkingBudget:
-                        (req.config!['thinkingConfig'] as Map)['thinkingBudget']
-                            as int?,
-                    includeThoughts:
-                        (req.config!['thinkingConfig']
-                                as Map)['includeThoughts']
-                            as bool?,
-                  )
-                : null,
+          generationConfig: toGeminiSettings(
+            options,
+            req.output?.schema,
+            isJsonMode,
           ),
+          tools: toGeminiTools(req.tools, codeExecution: options.codeExecution),
+          toolConfig: toGeminiToolConfig(options.functionCallingConfig),
         );
 
-        final response = await model.generateContent(
-          toGeminiContent(req.messages),
-          tools: req.tools?.map(toGeminiTool).toList(),
-        );
+        if (ctx.streamingRequested) {
+          final stream = model.generateContentStream(
+            toGeminiContent(req.messages),
+          );
+          final chunks = <fai.GenerateContentResponse>[];
+          await for (final chunk in stream) {
+            chunks.add(chunk);
+            if (chunk.candidates.isNotEmpty) {
+              final (message, finishReason) = fromGeminiCandidate(
+                chunk.candidates.first,
+              );
+              ctx.sendChunk(
+                ModelResponseChunk(index: 0, content: message.content),
+              );
+            }
+          }
+          final aggregated = aggregateResponses(chunks);
+          final (message, finishReason) = fromGeminiCandidate(
+            aggregated.candidates.first,
+          );
+          return ModelResponse(
+            finishReason: finishReason,
+            message: message,
+            raw: {
+              'candidates': aggregated.candidates
+                  .map(
+                    (c) => {
+                      'content': c.content.parts.length,
+                      'finishReason': c.finishReason?.name,
+                    },
+                  )
+                  .toList(),
+            },
+            usage: extractUsage(aggregated.usageMetadata),
+          );
+        } else {
+          final response = await model.generateContent(
+            toGeminiContent(req.messages),
+          );
 
-        if (response.candidates.isEmpty) {
-          // TODO: Consider inspecting response.promptFeedback for the block reason.
-          throw GenkitException('Model returned no candidates.');
+          if (response.candidates.isEmpty) {
+            // TODO: Consider inspecting response.promptFeedback for the block reason.
+            throw GenkitException('Model returned no candidates.');
+          }
+
+          final (message, finishReason) = fromGeminiCandidate(
+            response.candidates.first,
+          );
+
+          final raw = <String, dynamic>{
+            // Recreate structure
+            'candidates': response.candidates
+                .map(
+                  (c) => {
+                    'content': c
+                        .content
+                        .parts
+                        .length, // content.toJson() might not exist or be simple
+                    'finishReason': c.finishReason?.name,
+                  },
+                )
+                .toList(),
+          };
+
+          return ModelResponse(
+            finishReason: finishReason,
+            message: message,
+            raw: raw,
+            usage: extractUsage(response.usageMetadata),
+          );
         }
-        final (message, finishReason) = fromGeminiCandidate(
-          response.candidates.first,
-        );
-
-        final raw = <String, dynamic>{
-          'candidates': response.candidates
-              .map(
-                (c) => {
-                  'content': c
-                      .content
-                      .parts
-                      .length, // content.toJson() might not exist or be simple
-                  'finishReason': c.finishReason?.name,
-                },
-              )
-              .toList(),
-        };
-
-        return ModelResponse(
-          finishReason: finishReason,
-          message: message,
-          raw: raw,
-        );
       },
     );
   }
@@ -201,27 +264,27 @@ class _FirebaseGenAiPlugin extends GenkitPlugin {
       name: 'firebaseai/$modelName',
       fn: (stream, ctx) async {
         final configMap = ctx.init?.config;
-        final tools = ctx.init?.tools?.map(toGeminiTool).toList();
+        final tools = toGeminiTools(ctx.init?.tools);
         final systemMessage = ctx.init?.messages
             .where((m) => m.role == Role.system)
             .firstOrNull;
         final systemInstruction = systemMessage != null
-            ? m.Content(
+            ? fai.Content(
                 'system',
                 systemMessage.content.map(toGeminiPart).toList(),
               )
             : null;
 
-        final liveConfig = m.LiveGenerationConfig(
+        final liveConfig = fai.LiveGenerationConfig(
           responseModalities: (configMap?['responseModalities'] as List?)?.map((
             e,
           ) {
-            return m.ResponseModalities.values.byName(
+            return fai.ResponseModalities.values.byName(
               (e as String).toLowerCase(),
             );
           }).toList(),
           speechConfig: configMap?['speechConfig'] != null
-              ? m.SpeechConfig(
+              ? fai.SpeechConfig(
                   voiceName:
                       (((configMap!['speechConfig'] as Map)['voiceConfig']
                                   as Map)['prebuiltVoiceConfig']
@@ -238,7 +301,12 @@ class _FirebaseGenAiPlugin extends GenkitPlugin {
               ?.toDouble(),
         );
 
-        final instance = m.FirebaseAI.googleAI();
+        final instance = fai.FirebaseAI.googleAI(
+          app: _app,
+          appCheck: _appCheck,
+          auth: _auth,
+          useLimitedUseAppCheckTokens: _useLimitedUseAppCheckTokens,
+        );
         final model = instance.liveGenerativeModel(
           model: modelName,
           liveGenerationConfig: liveConfig,
@@ -307,22 +375,22 @@ class _FirebaseGenAiPlugin extends GenkitPlugin {
     );
   }
 
-  Future<void> _sendToSession(m.LiveSession session, Message msg) async {
+  Future<void> _sendToSession(fai.LiveSession session, Message msg) async {
     _logger.fine('Sending message: ${msg.role} parts: ${msg.content.length}');
 
     final contentParts = msg.content.map(toGeminiPart).toList();
 
     for (final part in contentParts) {
       try {
-        if (part is m.InlineDataPart) {
+        if (part is fai.InlineDataPart) {
           // TODO: Check mimeType for video vs audio
           await session.sendAudioRealtime(part);
-        } else if (part is m.FunctionResponse) {
+        } else if (part is fai.FunctionResponse) {
           await session.sendToolResponse([part]);
         } else {
           // Fallback for others
           await session.send(
-            input: m.Content(msg.role.value, [part]),
+            input: fai.Content(msg.role.value, [part]),
             turnComplete: true,
           );
         }
@@ -335,55 +403,114 @@ class _FirebaseGenAiPlugin extends GenkitPlugin {
 }
 
 @visibleForTesting
-Iterable<m.Content> toGeminiContent(List<Message> messages) {
+Iterable<fai.Content> toGeminiContent(List<Message> messages) {
   return messages.map(
-    (msg) => m.Content(msg.role.value, msg.content.map(toGeminiPart).toList()),
+    (msg) =>
+        fai.Content(msg.role.value, msg.content.map(toGeminiPart).toList()),
   );
 }
 
 @visibleForTesting
-m.Part toGeminiPart(Part p) {
+fai.Part toGeminiPart(Part p) {
+  final isThought = p.metadata?['isThought'] == true;
+  final thoughtSignature = p.metadata?['thoughtSignature'] as String?;
+
+  // firebase_ai does not officially expose thoughtSignature in its public constructors
+  // yet. It only exposes them via `.forTest` constructors meant for internal testing.
+  // We use them here but defensively fallback to standard constructors if they
+  // are ever removed or changed.
+  if (p.isReasoning) {
+    try {
+      return fai.TextPart.forTest(
+        p.reasoning!,
+        isThought: true,
+        thoughtSignature: thoughtSignature,
+      );
+    } catch (_) {
+      return fai.TextPart(p.reasoning!, isThought: true);
+    }
+  }
   if (p.isText) {
-    p as TextPart;
-    return m.TextPart(p.text);
+    try {
+      return fai.TextPart.forTest(
+        p.text!,
+        isThought: isThought,
+        thoughtSignature: thoughtSignature,
+      );
+    } catch (_) {
+      return fai.TextPart(p.text!, isThought: isThought);
+    }
   }
   if (p.isMedia) {
-    p as MediaPart;
-    final media = p.media;
+    final media = p.media!;
     if (media.url.startsWith('data:')) {
       final uri = Uri.parse(media.url);
       if (uri.data != null) {
-        return m.InlineDataPart(
-          media.contentType ?? 'application/octet-stream',
-          uri.data!.contentAsBytes(),
-        );
+        try {
+          return fai.InlineDataPart.forTest(
+            media.contentType ?? 'application/octet-stream',
+            uri.data!.contentAsBytes(),
+            isThought: isThought,
+            thoughtSignature: thoughtSignature,
+          );
+        } catch (_) {
+          return fai.InlineDataPart(
+            media.contentType ?? 'application/octet-stream',
+            uri.data!.contentAsBytes(),
+            isThought: isThought,
+          );
+        }
       }
     }
     // Assume HTTP/S or other URLs are File URIs
-    return m.FileData(
-      media.contentType ?? 'application/octet-stream',
-      media.url,
-    );
+    try {
+      return fai.FileData.forTest(
+        media.contentType ?? 'application/octet-stream',
+        media.url,
+        isThought: isThought,
+        thoughtSignature: thoughtSignature,
+      );
+    } catch (_) {
+      return fai.FileData(
+        media.contentType ?? 'application/octet-stream',
+        media.url,
+        isThought: isThought,
+      );
+    }
   }
   if (p.isToolResponse) {
-    p as ToolResponsePart;
-    return m.FunctionResponse(p.toolResponse.name, {
-      'result': p.toolResponse.output,
-    }, id: p.toolResponse.ref);
+    final toolResponse = p.toolResponse!;
+    return fai.FunctionResponse(
+      toolResponse.name,
+      {'result': toolResponse.output},
+      id: toolResponse.ref,
+      isThought: isThought,
+    );
   }
   if (p.isToolRequest) {
-    p as ToolRequestPart;
-    return m.FunctionCall(
-      p.toolRequest.name,
-      p.toolRequest.input ?? {},
-      id: p.toolRequest.ref,
-    );
+    final toolRequest = p.toolRequest!;
+    try {
+      return fai.FunctionCall.forTest(
+        toolRequest.name,
+        toolRequest.input ?? {},
+        id: toolRequest.ref,
+        isThought: isThought,
+        thoughtSignature: thoughtSignature,
+      );
+    } catch (_) {
+      return fai.FunctionCall(
+        toolRequest.name,
+        toolRequest.input ?? {},
+        id: toolRequest.ref,
+        isThought: isThought,
+      );
+    }
   }
   throw UnimplementedError('Part type $p not supported yet');
 }
 
 @visibleForTesting
-(Message, FinishReason) fromGeminiCandidate(m.Candidate candidate) {
+(Message, FinishReason) fromGeminiCandidate(fai.Candidate candidate) {
   final finishReason = FinishReason(candidate.finishReason?.name ?? 'unknown');
   final message = Message(
     role: Role(candidate.content.role ?? 'model'),
@@ -393,33 +520,46 @@ m.Part toGeminiPart(Part p) {
 }
 
 @visibleForTesting
-@visibleForTesting
-Part fromGeminiPart(m.Part p) {
-  if (p is m.TextPart) {
-    return TextPart(text: p.text);
+Part fromGeminiPart(fai.Part p) {
+  final pJson = p.toJson() as Map<String, dynamic>;
+  final thoughtSignature = pJson['thoughtSignature'] as String?;
+
+  final metadata = <String, dynamic>{
+    if (p.isThought == true) 'isThought': true,
+    if (thoughtSignature != null) 'thoughtSignature': thoughtSignature,
+  };
+
+  if (p is fai.TextPart) {
+    if (p.isThought == true) {
+      return ReasoningPart(reasoning: p.text, metadata: metadata);
+    }
+    return TextPart(text: p.text, metadata: metadata);
   }
-  if (p is m.FunctionCall) {
+  if (p is fai.FunctionCall) {
     return ToolRequestPart(
-      toolRequest: ToolRequest(name: p.name, input: p.args),
+      toolRequest: ToolRequest(name: p.name, input: p.args, ref: p.id),
+      metadata: metadata,
     );
   }
-  if (p is m.InlineDataPart) {
+  if (p is fai.InlineDataPart) {
     final base64 = base64Encode(p.bytes);
     return MediaPart(
       media: Media(
         url: 'data:${p.mimeType};base64,$base64',
         contentType: p.mimeType,
       ),
+      metadata: metadata,
     );
   }
   throw UnimplementedError('Part type $p not supported yet in response');
 }
 
-ModelResponseChunk? _fromGeminiLiveEvent(m.LiveServerResponse event) {
-  final liveParts = event.message is m.LiveServerContent
-      ? (event.message as m.LiveServerContent).modelTurn?.parts
-      : event.message is m.LiveServerToolCall
-      ? (event.message as m.LiveServerToolCall).functionCalls as List<m.Part>
+ModelResponseChunk? _fromGeminiLiveEvent(fai.LiveServerResponse event) {
+  final liveParts = event.message is fai.LiveServerContent
+      ? (event.message as fai.LiveServerContent).modelTurn?.parts
+      : event.message is fai.LiveServerToolCall
+      ? (event.message as fai.LiveServerToolCall).functionCalls
+            as List<fai.Part>
       : null;
   if (liveParts == null) return null;
   // We only care about content updates for now
@@ -429,21 +569,55 @@ ModelResponseChunk? _fromGeminiLiveEvent(m.LiveServerResponse event) {
 }
 
 @visibleForTesting
-m.Tool toGeminiTool(ToolDefinition tool) {
-  final schemaMap = tool.inputSchema;
-  final propertiesMap = schemaMap?['properties'] as Map<String, dynamic>? ?? {};
+List<fai.Tool>? toGeminiTools(
+  List<ToolDefinition>? tools, {
+  bool? codeExecution,
+}) {
+  if ((tools == null || tools.isEmpty) && codeExecution != true) return null;
+
+  return [
+    if (tools != null) ...(tools.map(_toGeminiTool)),
+    if (codeExecution == true) fai.Tool.codeExecution(),
+  ];
+}
+
+fai.Tool _toGeminiTool(ToolDefinition tool) {
+  final rawSchema = tool.inputSchema;
+
+  var flattened = <String, dynamic>{};
+  if (rawSchema != null) {
+    flattened = Schema.fromMap(rawSchema).flatten().value;
+  }
+
+  final propertiesMap = flattened['properties'] as Map<String, dynamic>? ?? {};
+  final requiredList =
+      (flattened['required'] as List<dynamic>?)?.cast<String>() ?? [];
 
   final parameters = propertiesMap.map((key, value) {
     return MapEntry(key, toGeminiSchema(value as Map<String, dynamic>));
   });
 
-  return m.Tool.functionDeclarations([
-    m.FunctionDeclaration(tool.name, tool.description, parameters: parameters),
+  final optionalParameters = propertiesMap.keys
+      .where((k) => !requiredList.contains(k))
+      .toList();
+
+  return fai.Tool.functionDeclarations([
+    fai.FunctionDeclaration(
+      tool.name,
+      tool.description,
+      parameters: parameters,
+      optionalParameters: optionalParameters,
+    ),
   ]);
 }
 
 @visibleForTesting
-m.Schema toGeminiSchema(Map<String, dynamic> json) {
+fai.Schema toGeminiSchema(Map<String, dynamic> json) {
+  final flattened = Schema.fromMap(json).flatten().value;
+  return _toGeminiSchemaInternal(flattened);
+}
+
+fai.Schema _toGeminiSchemaInternal(Map<String, dynamic> json) {
   final type = json['type']; // dynamic
   final description = json['description'] as String?;
   final nullable = json['nullable'] as bool? ?? false;
@@ -457,31 +631,113 @@ m.Schema toGeminiSchema(Map<String, dynamic> json) {
 
   switch (typeStr) {
     case 'string':
-      return m.Schema.string(description: description, nullable: nullable);
+      return fai.Schema.string(description: description, nullable: nullable);
     case 'number':
-      return m.Schema.number(description: description, nullable: nullable);
+      return fai.Schema.number(description: description, nullable: nullable);
     case 'integer':
-      return m.Schema.integer(description: description, nullable: nullable);
+      return fai.Schema.integer(description: description, nullable: nullable);
     case 'boolean':
-      return m.Schema.boolean(description: description, nullable: nullable);
+      return fai.Schema.boolean(description: description, nullable: nullable);
     case 'array':
-      return m.Schema.array(
+      return fai.Schema.array(
         description: description,
         nullable: nullable,
         items: json['items'] != null
-            ? toGeminiSchema(json['items'] as Map<String, dynamic>)
-            : m.Schema.string(),
+            ? _toGeminiSchemaInternal(json['items'] as Map<String, dynamic>)
+            : fai.Schema.string(),
       );
     case 'object':
-      final properties = (json['properties'] as Map<String, dynamic>?)?.map(
-        (k, v) => MapEntry(k, toGeminiSchema(v as Map<String, dynamic>)),
-      );
-      return m.Schema.object(
-        properties: properties ?? {},
-        description: description,
-        nullable: nullable,
-      );
+      if (json.containsKey('properties')) {
+        final properties = (json['properties'] as Map<String, dynamic>?)?.map(
+          (k, v) =>
+              MapEntry(k, _toGeminiSchemaInternal(v as Map<String, dynamic>)),
+        );
+        return fai.Schema.object(
+          properties: properties ?? {},
+          description: description,
+          nullable: nullable,
+        );
+      } else {
+        return fai.Schema(
+          fai.SchemaType.object,
+          description: description,
+          nullable: nullable,
+        );
+      }
     default:
-      return m.Schema.string(description: description, nullable: nullable);
+      return fai.Schema.string(description: description, nullable: nullable);
   }
+}
+
+@visibleForTesting
+fai.GenerationConfig toGeminiSettings(
+  GeminiOptions options,
+  Map<String, dynamic>? outputSchema,
+  bool isJsonMode,
+) {
+  return fai.GenerationConfig(
+    candidateCount: options.candidateCount,
+    stopSequences: options.stopSequences ?? [],
+    maxOutputTokens: options.maxOutputTokens,
+    temperature: options.temperature,
+    topP: options.topP,
+    topK: options.topK,
+    responseMimeType: isJsonMode
+        ? 'application/json'
+        : (options.responseMimeType ?? ''),
+    responseSchema: outputSchema != null
+        ? toGeminiSchema(outputSchema)
+        : (options.responseSchema != null
+              ? toGeminiSchema(options.responseSchema!)
+              : null),
+    presencePenalty: options.presencePenalty,
+    frequencyPenalty: options.frequencyPenalty,
+    responseModalities: options.responseModalities
+        ?.map((e) => fai.ResponseModalities.values.byName(e.toLowerCase()))
+        .toList(),
+    thinkingConfig: options.thinkingConfig == null
+        ? null
+        : fai.ThinkingConfig(
+            includeThoughts: options.thinkingConfig!.includeThoughts ?? false,
+            thinkingBudget: options.thinkingConfig!.thinkingBudget,
+          ),
+  );
+}
+
+@visibleForTesting
+fai.ToolConfig? toGeminiToolConfig(
+  FunctionCallingConfig? functionCallingConfig,
+) {
+  if (functionCallingConfig == null) return null;
+  final modeStr = functionCallingConfig.mode;
+  final fai.FunctionCallingConfig mConfig;
+  if (modeStr == null) {
+    mConfig = fai.FunctionCallingConfig.auto();
+  } else {
+    switch (modeStr.toUpperCase()) {
+      case 'ANY':
+        mConfig = fai.FunctionCallingConfig.any(
+          functionCallingConfig.allowedFunctionNames?.toSet() ?? {},
+        );
+        break;
+      case 'NONE':
+        mConfig = fai.FunctionCallingConfig.none();
+        break;
+      case 'AUTO':
+      default:
+        mConfig = fai.FunctionCallingConfig.auto();
+        break;
+    }
+  }
+  return fai.ToolConfig(functionCallingConfig: mConfig);
+}
+
+@visibleForTesting
+GenerationUsage? extractUsage(fai.UsageMetadata? metadata) {
+  if (metadata == null) return null;
+  return GenerationUsage(
+    inputTokens: metadata.promptTokenCount?.toDouble() ?? 0,
+    outputTokens: metadata.candidatesTokenCount?.toDouble() ?? 0,
+    totalTokens: metadata.totalTokenCount?.toDouble() ?? 0,
+  );
 }

@@ -39,6 +39,7 @@ class OpenAIOptions {
     String? user,
     bool? jsonMode,
     String? visualDetailLevel,
+    bool? stream,
   }) {
     _json = {
       'version': ?version,
@@ -52,6 +53,7 @@ class OpenAIOptions {
       'user': ?user,
       'jsonMode': ?jsonMode,
       'visualDetailLevel': ?visualDetailLevel,
+      'stream': ?stream,
     };
   }
 
@@ -192,6 +194,18 @@ class OpenAIOptions {
     }
   }
 
+  bool? get stream {
+    return _json['stream'] as bool?;
+  }
+
+  set stream(bool? value) {
+    if (value == null) {
+      _json.remove('stream');
+    } else {
+      _json['stream'] = value;
+    }
+  }
+
   @override
   String toString() {
     return _json.toString();
@@ -226,6 +240,7 @@ class _OpenAIOptionsTypeFactory extends SchemanticType<OpenAIOptions> {
         'user': Schema.string(),
         'jsonMode': Schema.boolean(),
         'visualDetailLevel': Schema.string(enumValues: ['auto', 'low', 'high']),
+        'stream': Schema.boolean(),
       },
       required: [],
     ),

@@ -65,12 +65,12 @@ Flow<String, String, void, void> defineWhisperTranscriptionFlow(
 }
 
 /// Defines a flow that transcribes a local WAV/MP3 file via Whisper.
-Flow<String, String, void, void> defineWhisperFileTranscriptionFlow(
+Flow<String, String, void, void> defineWhisperAudioFileTranscriptionFlow(
   Genkit ai, {
   String model = 'whisper-1',
 }) {
   return ai.defineFlow(
-    name: 'whisperTranscribeFile',
+    name: 'whisperTranscribeAudioFile',
     inputSchema: .string(defaultValue: './sample.wav'),
     outputSchema: .string(),
     fn: (audioPath, _) async {
@@ -110,12 +110,12 @@ Flow<String, String, void, void> defineWhisperFileTranscriptionFlow(
 }
 
 /// Defines a flow that transcribes a local video file via Whisper.
-Flow<String, String, void, void> defineWhisperVideoTranscriptionFlow(
+Flow<String, String, void, void> defineWhisperVideoFileTranscriptionFlow(
   Genkit ai, {
   String model = 'whisper-1',
 }) {
   return ai.defineFlow(
-    name: 'whisperTranscribeVideo',
+    name: 'whisperTranscribeVideoFile',
     inputSchema: .string(defaultValue: './sample.mp4'),
     outputSchema: .string(),
     fn: (videoPath, _) async {
@@ -163,8 +163,8 @@ void main() {
 
   final ai = Genkit(plugins: [openAI(apiKey: apiKey)]);
   defineWhisperTranscriptionFlow(ai);
-  defineWhisperFileTranscriptionFlow(ai);
-  defineWhisperVideoTranscriptionFlow(ai);
+  defineWhisperAudioFileTranscriptionFlow(ai);
+  defineWhisperVideoFileTranscriptionFlow(ai);
 }
 
 String? _extractAudioMimeTypeFromDataUrl(String url) {

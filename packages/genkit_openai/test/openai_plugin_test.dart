@@ -14,8 +14,6 @@
 
 import 'package:genkit/genkit.dart';
 import 'package:genkit_openai/genkit_openai.dart';
-import 'package:genkit_openai/src/openai_plugin.dart'
-    show isSpeechSynthesisModel, resolveOpenAIModalities;
 import 'package:openai_dart/openai_dart.dart'
     show
         ChatCompletionAssistantMessage,
@@ -578,6 +576,28 @@ void main() {
     });
   });
 
+  group('getModelType', () {
+    test('classifies chat models', () {
+      expect(getModelType('gpt-4o'), 'chat');
+      expect(getModelType('chatgpt-4o-latest'), 'chat');
+    });
+
+    test('classifies audio and tts models', () {
+      expect(getModelType('gpt-4o-audio-preview'), 'audio');
+      expect(getModelType('gpt-4o-mini-tts'), 'tts');
+      expect(getModelType('whisper-1'), 'stt');
+    });
+
+    test('classifies image and video models', () {
+      expect(getModelType('dall-e-3'), 'image');
+      expect(getModelType('sora-2'), 'video');
+    });
+
+    test('returns unknown for unrecognized models', () {
+      expect(getModelType('my-custom-model'), 'unknown');
+    });
+  });
+
   group('Plugin Handle', () {
     test('creates plugin instance', () {
       final plugin = openAI(apiKey: 'test-key');
@@ -629,6 +649,39 @@ void main() {
     test('creates model reference', () {
       final ref = openAI.model('gpt-4o');
       expect(ref.name, 'openai/gpt-4o');
+    });
+
+    test('chat model reference hides audio-only custom options', () {
+      final schema = openAI.model('gpt-3.5-turbo').customOptions!.jsonSchema();
+      final properties = schema['properties'] as Map<String, dynamic>;
+
+      expect(properties.containsKey('responseModalities'), false);
+      expect(properties.containsKey('audioVoice'), false);
+      expect(properties.containsKey('audioFormat'), false);
+    });
+
+    test('audio model reference includes audio custom options', () {
+      final schema = openAI
+          .model('gpt-4o-audio-preview')
+          .customOptions!
+          .jsonSchema();
+      final properties = schema['properties'] as Map<String, dynamic>;
+
+      expect(properties.containsKey('responseModalities'), true);
+      expect(properties.containsKey('audioVoice'), true);
+      expect(properties.containsKey('audioFormat'), true);
+    });
+
+    test('tts model reference includes voice/format but hides modalities', () {
+      final schema = openAI
+          .model('gpt-4o-mini-tts')
+          .customOptions!
+          .jsonSchema();
+      final properties = schema['properties'] as Map<String, dynamic>;
+
+      expect(properties.containsKey('responseModalities'), false);
+      expect(properties.containsKey('audioVoice'), true);
+      expect(properties.containsKey('audioFormat'), true);
     });
   });
 

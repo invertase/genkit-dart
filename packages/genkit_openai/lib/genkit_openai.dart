@@ -18,16 +18,18 @@ import 'package:http/http.dart' as http;
 import 'package:schemantic/schemantic.dart';
 
 import 'src/openai_plugin.dart';
+import 'src/options.dart';
 
+export 'src/audio.dart' show audioModelInfo, resolveOpenAIModalities;
 export 'src/converters.dart' show GenkitConverter;
-export 'src/models.dart'
+export 'src/tts.dart' show isSpeechSynthesisModel, ttsModelInfo;
+export 'src/utils.dart'
     show
-        audioModelInfo,
         defaultModelInfo,
+        getModelType,
         oSeriesModelInfo,
         supportsTools,
-        supportsVision,
-        ttsModelInfo;
+        supportsVision;
 
 part 'genkit_openai.g.dart';
 
@@ -281,6 +283,6 @@ class OpenAICompatPluginHandle {
 
   /// Reference to a model
   ModelRef<OpenAIOptions> model(String name) {
-    return modelRef('openai/$name', customOptions: OpenAIOptions.$schema);
+    return modelRef('openai/$name', customOptions: optionsSchemaForModel(name));
   }
 }

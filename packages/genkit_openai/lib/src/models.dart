@@ -13,6 +13,62 @@
 // limitations under the License.
 
 import 'package:genkit/genkit.dart';
+import 'package:schemantic/schemantic.dart';
+
+import 'transcriptions.dart';
+
+part 'models.g.dart';
+
+typedef Schema = $Schema;
+
+@Schematic()
+abstract class $OpenAIOptions {
+  /// Model version override (e.g., 'gpt-4o-2024-08-06')
+  String? get version;
+
+  /// Sampling temperature (0.0 - 2.0)
+  @DoubleField(minimum: 0.0, maximum: 2.0)
+  double? get temperature;
+
+  /// Nucleus sampling (0.0 - 1.0)
+  @DoubleField(minimum: 0.0, maximum: 1.0)
+  double? get topP;
+
+  /// Maximum tokens to generate
+  int? get maxTokens;
+
+  /// Stop sequences
+  List<String>? get stop;
+
+  /// Presence penalty (-2.0 - 2.0)
+  @DoubleField(minimum: -2.0, maximum: 2.0)
+  double? get presencePenalty;
+
+  /// Frequency penalty (-2.0 - 2.0)
+  @DoubleField(minimum: -2.0, maximum: 2.0)
+  double? get frequencyPenalty;
+
+  /// Seed for deterministic sampling
+  int? get seed;
+
+  /// User identifier for abuse detection
+  String? get user;
+
+  /// JSON mode
+  bool? get jsonMode;
+
+  /// Visual detail level for images ('auto', 'low', 'high')
+  @StringField(enumValues: ['auto', 'low', 'high'])
+  String? get visualDetailLevel;
+}
+
+/// Custom model definition for registering models from compatible providers.
+class CustomModelDefinition {
+  final String name;
+  final ModelInfo? info;
+
+  const CustomModelDefinition({required this.name, this.info});
+}
 
 /// Default model info for standard OpenAI models
 ModelInfo defaultModelInfo(String model) {
@@ -25,25 +81,6 @@ ModelInfo defaultModelInfo(String model) {
       'media': supportsVision(model),
     },
   );
-}
-
-/// Model info for transcription models (Whisper and GPT transcribe models).
-ModelInfo transcriptionModelInfo(String model) {
-  return ModelInfo(
-    label: model,
-    supports: {
-      'multiturn': false,
-      'tools': false,
-      'systemRole': false,
-      'media': true,
-    },
-  );
-}
-
-/// Check if a model is a transcription model (Whisper/GPT transcribe).
-bool isTranscriptionModel(String model) {
-  final id = model.toLowerCase();
-  return id.contains('whisper') || id.contains('transcribe');
 }
 
 /// Model info for O-series reasoning models (o1, o2, o3, o4, etc.)
@@ -77,11 +114,14 @@ bool supportsTools(String model) {
     return false;
   }
 
+  if (isTranscriptionModel(id)) {
+    return false;
+  }
+
   // Specialized models that don't support tools
   const nonToolKeywords = [
     'embedding',
     'tts',
-    'whisper',
     'dall-e',
     'moderation',
     'sora',

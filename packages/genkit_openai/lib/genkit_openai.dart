@@ -13,70 +13,25 @@
 // limitations under the License.
 
 import 'package:genkit/plugin.dart';
-import 'package:schemantic/schemantic.dart';
 
+import 'src/models.dart' show CustomModelDefinition, OpenAIOptions;
 import 'src/openai_plugin.dart';
+import 'src/transcriptions.dart' show OpenAITranscriptionOptions;
 
 export 'src/converters.dart' show GenkitConverter;
 export 'src/models.dart'
     show
+        CustomModelDefinition,
+        OpenAIOptions,
         defaultModelInfo,
-        isTranscriptionModel,
         oSeriesModelInfo,
         supportsTools,
-        supportsVision,
+        supportsVision;
+export 'src/transcriptions.dart'
+    show
+        OpenAITranscriptionOptions,
+        isTranscriptionModel,
         transcriptionModelInfo;
-
-part 'genkit_openai.g.dart';
-
-@Schematic()
-abstract class $OpenAIOptions {
-  /// Model version override (e.g., 'gpt-4o-2024-08-06')
-  String? get version;
-
-  /// Sampling temperature (0.0 - 2.0)
-  @DoubleField(minimum: 0.0, maximum: 2.0)
-  double? get temperature;
-
-  /// Nucleus sampling (0.0 - 1.0)
-  @DoubleField(minimum: 0.0, maximum: 1.0)
-  double? get topP;
-
-  /// Maximum tokens to generate
-  int? get maxTokens;
-
-  /// Stop sequences
-  List<String>? get stop;
-
-  /// Presence penalty (-2.0 - 2.0)
-  @DoubleField(minimum: -2.0, maximum: 2.0)
-  double? get presencePenalty;
-
-  /// Frequency penalty (-2.0 - 2.0)
-  @DoubleField(minimum: -2.0, maximum: 2.0)
-  double? get frequencyPenalty;
-
-  /// Seed for deterministic sampling
-  int? get seed;
-
-  /// User identifier for abuse detection
-  String? get user;
-
-  /// JSON mode
-  bool? get jsonMode;
-
-  /// Visual detail level for images ('auto', 'low', 'high')
-  @StringField(enumValues: ['auto', 'low', 'high'])
-  String? get visualDetailLevel;
-}
-
-/// Custom model definition for registering models from compatible providers
-class CustomModelDefinition {
-  final String name;
-  final ModelInfo? info;
-
-  const CustomModelDefinition({required this.name, this.info});
-}
 
 /// Public constant handle for OpenAI-compatible plugin
 const OpenAICompatPluginHandle openAI = OpenAICompatPluginHandle();
@@ -103,5 +58,13 @@ class OpenAICompatPluginHandle {
   /// Reference to a model
   ModelRef<OpenAIOptions> model(String name) {
     return modelRef('openai/$name', customOptions: OpenAIOptions.$schema);
+  }
+
+  /// Reference to a transcription model with transcription-specific options
+  ModelRef<OpenAITranscriptionOptions> transcribe(String name) {
+    return modelRef(
+      'openai/$name',
+      customOptions: OpenAITranscriptionOptions.$schema,
+    );
   }
 }

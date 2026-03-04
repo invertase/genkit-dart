@@ -21,6 +21,8 @@ import 'package:test/test.dart';
 
 part 'integration_test.g.dart';
 
+typedef Schema = $Schema;
+
 void main() {
   final apiKey = Platform.environment['OPENAI_API_KEY'];
 

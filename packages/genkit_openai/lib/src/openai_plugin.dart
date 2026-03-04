@@ -12,35 +12,25 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-import 'dart:convert';
-import 'dart:io';
-
 import 'package:genkit/plugin.dart';
 import 'package:openai_dart/openai_dart.dart' hide Model;
-import 'package:schemantic/schemantic.dart';
 
 import '../genkit_openai.dart';
 import 'aggregation.dart';
+import 'sst.dart';
+import 'utils.dart' as openai_utils;
 
 /// Returns true when the output config indicates JSON-structured output
 /// (format is 'json' or contentType is 'application/json').
 bool isJsonStructuredOutput(String? format, String? contentType) {
-  return format == 'json' || contentType == 'application/json';
+  return openai_utils.isJsonStructuredOutput(format, contentType);
 }
 
 /// Builds an OpenAI [ResponseFormat] from a Genkit output schema.
 /// Flattens `$ref`/`$defs` since OpenAI requires `type` at the top level.
 /// Returns null if [schema] is null.
 ResponseFormat? buildOpenAIResponseFormat(Map<String, dynamic>? schema) {
-  if (schema == null) return null;
-  final flattened = schema.flatten();
-  return ResponseFormat.jsonSchema(
-    jsonSchema: JsonSchemaObject(
-      name: 'output',
-      schema: {...flattened, 'additionalProperties': false},
-      strict: true,
-    ),
-  );
+  return openai_utils.buildOpenAIResponseFormat(schema);
 }
 
 /// Core plugin implementation
@@ -259,7 +249,9 @@ class OpenAIPlugin extends GenkitPlugin {
             return modelMetadata(
               'openai/$modelId',
               modelInfo: modelInfo,
-              customOptions: OpenAIOptions.$schema,
+              customOptions: isTranscriptionModel(modelId)
+                  ? OpenAITranscriptionOptions.$schema
+                  : OpenAIOptions.$schema,
             );
           })
           .toList();
@@ -284,16 +276,22 @@ class OpenAIPlugin extends GenkitPlugin {
 
   Model _createModel(String modelName, ModelInfo? info) {
     final modelInfo = info ?? _getModelInfo(modelName);
+    final customOptions = isTranscriptionModel(modelName)
+        ? OpenAITranscriptionOptions.$schema
+        : OpenAIOptions.$schema;
 
     return Model(
       name: 'openai/$modelName',
-      customOptions: OpenAIOptions.$schema,
+      customOptions: customOptions,
       metadata: {'model': modelInfo.toJson()},
       fn: (req, ctx) async {
         final request = req!;
         final options = request.config != null
             ? OpenAIOptions.$schema.parse(request.config!)
             : OpenAIOptions();
+        final transcriptionOptions = request.config != null
+            ? OpenAITranscriptionOptions.$schema.parse(request.config!)
+            : OpenAITranscriptionOptions();
 
         if (apiKey == null) {
           throw GenkitException(
@@ -303,7 +301,17 @@ class OpenAIPlugin extends GenkitPlugin {
 
         final resolvedModel = options.version ?? modelName;
         if (isTranscriptionModel(resolvedModel)) {
-          return _handleTranscription(request, resolvedModel, ctx);
+          return handleSpeechToText(
+            request: request,
+            modelName: resolvedModel,
+            apiKey: apiKey!,
+            baseUrl: baseUrl,
+            headers: headers,
+            temperature:
+                transcriptionOptions.temperature ?? options.temperature,
+            configuredResponseFormat: transcriptionOptions.responseFormat,
+            ctx: ctx,
+          );
         }
 
         final client = OpenAIClient(
@@ -376,255 +384,6 @@ class OpenAIPlugin extends GenkitPlugin {
         }
       },
     );
-  }
-
-  Future<ModelResponse> _handleTranscription(
-    ModelRequest req,
-    String modelName,
-    ({
-      bool streamingRequested,
-      void Function(ModelResponseChunk) sendChunk,
-      Map<String, dynamic>? context,
-      Stream<ModelRequest>? inputStream,
-      void init,
-    })
-    ctx,
-  ) async {
-    if (ctx.streamingRequested) {
-      throw GenkitException(
-        'Streaming is not currently supported for transcription models.',
-      );
-    }
-
-    final media = _extractAudioMedia(req.messages);
-    if (media == null) {
-      throw GenkitException(
-        'Transcription requires at least one audio MediaPart in request messages.',
-      );
-    }
-
-    final audioPayload = _decodeAudioDataUrl(media);
-    final transcriptionUri = _buildOpenAIUri('/audio/transcriptions');
-    final httpClient = HttpClient();
-
-    try {
-      final request = await httpClient.postUrl(transcriptionUri);
-      request.headers.set(HttpHeaders.authorizationHeader, 'Bearer ${apiKey!}');
-      request.headers.set(HttpHeaders.acceptHeader, 'application/json');
-      if (headers != null) {
-        for (final header in headers!.entries) {
-          request.headers.set(header.key, header.value);
-        }
-      }
-
-      final boundary = 'genkit-${DateTime.now().microsecondsSinceEpoch}';
-      request.headers.set(
-        HttpHeaders.contentTypeHeader,
-        'multipart/form-data; boundary=$boundary',
-      );
-
-      final bodyBytes = <int>[];
-      _appendMultipartField(bodyBytes, boundary, 'model', modelName);
-
-      final prompt = _extractTranscriptionPrompt(req.messages);
-      if (prompt != null && prompt.isNotEmpty) {
-        _appendMultipartField(bodyBytes, boundary, 'prompt', prompt);
-      }
-
-      _appendMultipartFile(
-        bodyBytes,
-        boundary,
-        fieldName: 'file',
-        filename: audioPayload.filename,
-        contentType: audioPayload.contentType,
-        bytes: audioPayload.bytes,
-      );
-
-      bodyBytes.addAll(utf8.encode('--$boundary--\r\n'));
-      request.add(bodyBytes);
-
-      final response = await request.close();
-      final responseBody = await utf8.decoder.bind(response).join();
-
-      if (response.statusCode < 200 || response.statusCode >= 300) {
-        throw GenkitException(
-          'OpenAI API error: transcription request failed with status ${response.statusCode}.',
-          status: StatusCodes.fromHttpStatus(response.statusCode),
-          details: responseBody,
-        );
-      }
-
-      final parsedBody = jsonDecode(responseBody);
-      final raw = parsedBody is Map<String, dynamic>
-          ? parsedBody
-          : <String, dynamic>{'response': parsedBody};
-      final transcript = _extractTranscriptionText(raw);
-
-      if (transcript == null || transcript.trim().isEmpty) {
-        throw GenkitException(
-          'Transcription response did not contain text.',
-          details: responseBody,
-        );
-      }
-
-      return ModelResponse(
-        finishReason: FinishReason.stop,
-        message: Message(
-          role: Role.model,
-          content: [TextPart(text: transcript.trim())],
-        ),
-        raw: raw,
-      );
-    } on GenkitException {
-      rethrow;
-    } on FormatException catch (e, stackTrace) {
-      throw GenkitException(
-        'Invalid transcription response format: $e',
-        underlyingException: e,
-        stackTrace: stackTrace,
-      );
-    } catch (e, stackTrace) {
-      throw GenkitException(
-        'OpenAI transcription error: $e',
-        details: e.toString(),
-        underlyingException: e,
-        stackTrace: stackTrace,
-      );
-    } finally {
-      httpClient.close(force: true);
-    }
-  }
-
-  Uri _buildOpenAIUri(String path) {
-    final normalizedPath = path.startsWith('/') ? path : '/$path';
-
-    if (baseUrl == null || baseUrl!.isEmpty) {
-      return Uri.parse('https://api.openai.com/v1$normalizedPath');
-    }
-
-    final parsedBaseUri = Uri.parse(baseUrl!);
-    final trimmedBasePath = parsedBaseUri.path.endsWith('/')
-        ? parsedBaseUri.path.substring(0, parsedBaseUri.path.length - 1)
-        : parsedBaseUri.path;
-
-    return parsedBaseUri.replace(path: '$trimmedBasePath$normalizedPath');
-  }
-
-  Media? _extractAudioMedia(List<Message> messages) {
-    for (final message in messages.reversed) {
-      for (final part in message.content.reversed) {
-        final media = part.media;
-        if (media == null) continue;
-
-        final contentType = media.contentType?.toLowerCase();
-        final normalizedUrl = media.url.toLowerCase();
-        final isTranscriptionDataUrl =
-            normalizedUrl.startsWith('data:audio/') ||
-            normalizedUrl.startsWith('data:video/') ||
-            normalizedUrl.startsWith('data:application/ogg;');
-        final isTranscriptionContentType =
-            contentType != null &&
-            (contentType.startsWith('audio/') ||
-                contentType == 'video/mp4' ||
-                contentType == 'video/webm' ||
-                contentType == 'application/ogg');
-        if (isTranscriptionDataUrl || isTranscriptionContentType) {
-          return media;
-        }
-      }
-    }
-    return null;
-  }
-
-  ({List<int> bytes, String contentType, String filename}) _decodeAudioDataUrl(
-    Media media,
-  ) {
-    final url = media.url.trim();
-    final match = RegExp(
-      r'^data:((?:audio|video)\/[^;]+|application\/ogg);base64,',
-      caseSensitive: false,
-    ).firstMatch(url);
-
-    if (match == null) {
-      throw GenkitException(
-        'Audio media must be provided as a base64 data URL for transcription models.',
-      );
-    }
-
-    final contentType = match.group(1)!.toLowerCase();
-    final encodedAudio = url.substring(match.end);
-    final bytes = base64Decode(encodedAudio);
-    final filename = switch (contentType) {
-      'audio/flac' || 'audio/x-flac' => 'audio.flac',
-      'audio/mp4' || 'video/mp4' => 'audio.mp4',
-      'audio/mpeg' => 'audio.mpeg',
-      'audio/mpga' || 'audio/x-mpga' => 'audio.mpga',
-      'audio/m4a' || 'audio/x-m4a' => 'audio.m4a',
-      'audio/ogg' || 'application/ogg' => 'audio.ogg',
-      'audio/wav' || 'audio/x-wav' || 'audio/wave' => 'audio.wav',
-      'audio/mp3' || 'audio/x-mp3' => 'audio.mp3',
-      'audio/webm' || 'video/webm' => 'audio.webm',
-      _ => 'audio.bin',
-    };
-
-    return (bytes: bytes, contentType: contentType, filename: filename);
-  }
-
-  String? _extractTranscriptionPrompt(List<Message> messages) {
-    for (final message in messages.reversed) {
-      if (message.role != Role.user) continue;
-
-      final prompt = message.text.trim();
-      if (prompt.isNotEmpty) return prompt;
-    }
-    return null;
-  }
-
-  String? _extractTranscriptionText(Map<String, dynamic> responseBody) {
-    final text = responseBody['text'];
-    if (text is String && text.trim().isNotEmpty) {
-      return text;
-    }
-
-    final transcript = responseBody['transcript'];
-    if (transcript is String && transcript.trim().isNotEmpty) {
-      return transcript;
-    }
-
-    return null;
-  }
-
-  void _appendMultipartField(
-    List<int> bodyBytes,
-    String boundary,
-    String name,
-    String value,
-  ) {
-    bodyBytes.addAll(utf8.encode('--$boundary\r\n'));
-    bodyBytes.addAll(
-      utf8.encode('Content-Disposition: form-data; name="$name"\r\n\r\n'),
-    );
-    bodyBytes.addAll(utf8.encode(value));
-    bodyBytes.addAll(utf8.encode('\r\n'));
-  }
-
-  void _appendMultipartFile(
-    List<int> bodyBytes,
-    String boundary, {
-    required String fieldName,
-    required String filename,
-    required String contentType,
-    required List<int> bytes,
-  }) {
-    bodyBytes.addAll(utf8.encode('--$boundary\r\n'));
-    bodyBytes.addAll(
-      utf8.encode(
-        'Content-Disposition: form-data; name="$fieldName"; filename="$filename"\r\n',
-      ),
-    );
-    bodyBytes.addAll(utf8.encode('Content-Type: $contentType\r\n\r\n'));
-    bodyBytes.addAll(bytes);
-    bodyBytes.addAll(utf8.encode('\r\n'));
   }
 
   /// Handle streaming response

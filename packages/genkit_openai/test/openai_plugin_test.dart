@@ -12,6 +12,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+import 'dart:async';
+import 'dart:convert';
+import 'dart:io';
+
 import 'package:genkit/genkit.dart';
 import 'package:genkit_openai/genkit_openai.dart';
 import 'package:openai_dart/openai_dart.dart'
@@ -51,6 +55,94 @@ void main() {
       final options = OpenAIOptions();
       expect(options.temperature, isNull);
       expect(options.maxTokens, isNull);
+    });
+  });
+
+  group('OpenAITranscriptionOptions', () {
+    test('parses temperature', () {
+      final options = OpenAITranscriptionOptions.$schema.parse({
+        'temperature': 0.4,
+      });
+      expect(options.temperature, 0.4);
+    });
+
+    test('parses response format', () {
+      final options = OpenAITranscriptionOptions.$schema.parse({
+        'responseFormat': 'verbose_json',
+      });
+      expect(options.responseFormat, 'verbose_json');
+    });
+  });
+
+  group('Transcription requests', () {
+    test('sends configured transcription multipart fields', () async {
+      final capturedFields = Completer<Map<String, List<String>>>();
+      final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      final subscription = server.listen((request) async {
+        final boundary = request.headers.contentType?.parameters['boundary'];
+        final body = await utf8.decoder.bind(request).join();
+
+        if (boundary != null && !capturedFields.isCompleted) {
+          capturedFields.complete(_parseMultipartFields(body, boundary));
+        }
+
+        request.response.statusCode = 200;
+        request.response.headers.contentType = ContentType.json;
+        request.response.write('{"text":"transcribed"}');
+        await request.response.close();
+      });
+
+      addTearDown(() async {
+        await subscription.cancel();
+        await server.close(force: true);
+      });
+
+      final ai = Genkit(
+        plugins: [
+          openAI(
+            apiKey: 'test-key',
+            baseUrl: 'http://127.0.0.1:${server.port}/v1',
+          ),
+        ],
+      );
+
+      final response = await ai.generate(
+        model: openAI.transcribe('whisper-1'),
+        messages: [
+          Message(
+            role: Role.user,
+            content: [
+              TextPart(text: 'fallback prompt'),
+              MediaPart(
+                media: Media(
+                  url: 'data:audio/wav;base64,UklGRg==',
+                  contentType: 'audio/wav',
+                ),
+              ),
+            ],
+          ),
+        ],
+        config: OpenAITranscriptionOptions(
+          temperature: 0.2,
+          responseFormat: 'verbose_json',
+        ),
+      );
+
+      expect(response.text, 'transcribed');
+
+      final fields = await capturedFields.future.timeout(
+        const Duration(seconds: 2),
+      );
+      expect(fields['model'], ['whisper-1']);
+      expect(fields['prompt'], ['fallback prompt']);
+      expect(fields['response_format'], ['verbose_json']);
+      expect(fields['temperature'], ['0.2']);
+      expect(fields.containsKey('language'), isFalse);
+      expect(fields.containsKey('include[]'), isFalse);
+      expect(fields.containsKey('timestamp_granularities[]'), isFalse);
+      expect(fields.containsKey('chunking_strategy'), isFalse);
+      expect(fields.containsKey('known_speaker_names[]'), isFalse);
+      expect(fields.containsKey('known_speaker_references[]'), isFalse);
     });
   });
 
@@ -370,6 +462,11 @@ void main() {
       final ref = openAI.model('gpt-4o');
       expect(ref.name, 'openai/gpt-4o');
     });
+
+    test('creates transcription model reference', () {
+      final ref = openAI.transcribe('whisper-1');
+      expect(ref.name, 'openai/whisper-1');
+    });
   });
 
   group('CustomModelDefinition', () {
@@ -382,4 +479,30 @@ void main() {
       expect(def.info?.label, 'Custom Model');
     });
   });
+}
+
+Map<String, List<String>> _parseMultipartFields(String body, String boundary) {
+  final fields = <String, List<String>>{};
+  final parts = body.split('--$boundary');
+  final namePattern = RegExp(r'name="([^"]+)"');
+
+  for (final rawPart in parts) {
+    if (rawPart.trim().isEmpty || rawPart.trim() == '--') continue;
+
+    final part = rawPart.trimLeft();
+    final sections = part.split('\r\n\r\n');
+    if (sections.length < 2) continue;
+
+    final headers = sections.first;
+    if (headers.contains('filename=')) continue;
+
+    final nameMatch = namePattern.firstMatch(headers);
+    if (nameMatch == null) continue;
+    final name = nameMatch.group(1)!;
+
+    final value = sections.sublist(1).join('\r\n\r\n').trim();
+    fields.putIfAbsent(name, () => <String>[]).add(value);
+  }
+
+  return fields;
 }

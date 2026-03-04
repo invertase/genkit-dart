@@ -20,6 +20,8 @@ import 'package:schemantic/schemantic.dart';
 
 part 'example.g.dart';
 
+typedef Schema = $Schema;
+
 @Schematic()
 abstract class $CalculatorInput {
   int get a;

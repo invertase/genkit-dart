@@ -26,9 +26,14 @@ abstract class $OpenAITranscriptionOptions {
   double? get temperature;
 
   /// Transcription response format
-  /// ('json', 'text', 'srt', 'verbose_json', 'vtt')
-  @StringField(enumValues: ['json', 'text', 'srt', 'verbose_json', 'vtt'])
+  /// ('json', 'text', 'srt', 'verbose_json', 'vtt', 'diarized_json')
+  @StringField(
+    enumValues: ['json', 'text', 'srt', 'verbose_json', 'vtt', 'diarized_json'],
+  )
   String? get responseFormat;
+
+  /// Whisper-only flag to use the translation endpoint.
+  bool? get translate;
 }
 
 /// Model info for transcription models (Whisper and GPT transcribe models).
@@ -40,6 +45,7 @@ ModelInfo transcriptionModelInfo(String model) {
       'tools': false,
       'systemRole': false,
       'media': true,
+      'output': ['text', 'json'],
     },
   );
 }

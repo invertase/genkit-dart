@@ -19,6 +19,18 @@ import 'package:genkit/plugin.dart';
 
 import 'utils.dart';
 
+typedef _MultipartField = ({String name, String value});
+
+const _transcriptionResponseFormats = <String>{
+  'json',
+  'text',
+  'srt',
+  'verbose_json',
+  'vtt',
+  'diarized_json',
+};
+const _transcriptionIncludeValues = <String>{'logprobs'};
+
 /// Handles speech-to-text (SST) requests for transcription models.
 Future<ModelResponse> handleSpeechToText({
   required ModelRequest request,
@@ -28,6 +40,8 @@ Future<ModelResponse> handleSpeechToText({
   required Map<String, String>? headers,
   required double? temperature,
   required String? configuredResponseFormat,
+  required bool? configuredTranslate,
+  required Map<String, dynamic>? rawConfig,
   required ({
     bool streamingRequested,
     void Function(ModelResponseChunk) sendChunk,
@@ -51,13 +65,21 @@ Future<ModelResponse> handleSpeechToText({
   }
 
   final audioPayload = _decodeAudioDataUrl(media);
-  final transcriptionUri = buildOpenAIUri('/audio/transcriptions', baseUrl);
+  final useTranslationEndpoint = _shouldUseTranslationEndpoint(
+    modelName: modelName,
+    configuredTranslate: configuredTranslate,
+    rawConfig: rawConfig,
+  );
+  final transcriptionUri = buildOpenAIUri(
+    useTranslationEndpoint ? '/audio/translations' : '/audio/transcriptions',
+    baseUrl,
+  );
   final httpClient = HttpClient();
 
   try {
     final httpRequest = await httpClient.postUrl(transcriptionUri);
     httpRequest.headers.set(HttpHeaders.authorizationHeader, 'Bearer $apiKey');
-    httpRequest.headers.set(HttpHeaders.acceptHeader, 'application/json');
+    httpRequest.headers.set(HttpHeaders.acceptHeader, '*/*');
     if (headers != null) {
       for (final header in headers.entries) {
         httpRequest.headers.set(header.key, header.value);
@@ -71,34 +93,16 @@ Future<ModelResponse> handleSpeechToText({
     );
 
     final bodyBytes = <int>[];
-    appendMultipartField(bodyBytes, boundary, 'model', modelName);
-
-    final prompt = _extractTranscriptionPrompt(request.messages);
-    if (prompt != null && prompt.isNotEmpty) {
-      appendMultipartField(bodyBytes, boundary, 'prompt', prompt);
-    }
-
-    final responseFormat = _resolveTranscriptionResponseFormat(
-      configuredResponseFormat,
-      request.output?.format,
-      request.output?.contentType,
+    final fields = _buildTranscriptionFields(
+      request: request,
+      modelName: modelName,
+      temperature: temperature,
+      configuredResponseFormat: configuredResponseFormat,
+      rawConfig: rawConfig,
+      useTranslationEndpoint: useTranslationEndpoint,
     );
-    if (responseFormat != null) {
-      appendMultipartField(
-        bodyBytes,
-        boundary,
-        'response_format',
-        responseFormat,
-      );
-    }
-
-    if (temperature != null) {
-      appendMultipartField(
-        bodyBytes,
-        boundary,
-        'temperature',
-        temperature.toString(),
-      );
+    for (final field in fields) {
+      appendMultipartField(bodyBytes, boundary, field.name, field.value);
     }
 
     appendMultipartFile(
@@ -118,32 +122,50 @@ Future<ModelResponse> handleSpeechToText({
 
     if (response.statusCode < 200 || response.statusCode >= 300) {
       throw GenkitException(
-        'OpenAI API error: transcription request failed with status ${response.statusCode}.',
+        'OpenAI API error: ${useTranslationEndpoint ? 'translation' : 'transcription'} request failed with status ${response.statusCode}.',
         status: StatusCodes.fromHttpStatus(response.statusCode),
         details: responseBody,
       );
     }
 
-    final parsedBody = jsonDecode(responseBody);
-    final raw = parsedBody is Map<String, dynamic>
-        ? parsedBody
-        : <String, dynamic>{'response': parsedBody};
-    final transcript = _extractTranscriptionText(raw);
+    final contentType = response.headers.contentType?.mimeType.toLowerCase();
+    if (contentType != null && contentType.contains('application/json')) {
+      final parsedBody = jsonDecode(responseBody);
+      final raw = parsedBody is Map<String, dynamic>
+          ? parsedBody
+          : <String, dynamic>{'response': parsedBody};
+      final transcript = _extractTranscriptionText(raw);
 
-    if (transcript == null || transcript.trim().isEmpty) {
-      throw GenkitException(
-        'Transcription response did not contain text.',
-        details: responseBody,
+      if (transcript == null || transcript.trim().isEmpty) {
+        throw GenkitException(
+          '${useTranslationEndpoint ? 'Translation' : 'Transcription'} response did not contain text.',
+          details: responseBody,
+        );
+      }
+
+      return ModelResponse(
+        finishReason: FinishReason.stop,
+        message: Message(
+          role: Role.model,
+          content: [TextPart(text: transcript.trim())],
+        ),
+        raw: raw,
       );
     }
 
+    final transcript = responseBody.trim();
+    if (transcript.isEmpty) {
+      throw GenkitException(
+        '${useTranslationEndpoint ? 'Translation' : 'Transcription'} response did not contain text.',
+        details: responseBody,
+      );
+    }
     return ModelResponse(
       finishReason: FinishReason.stop,
       message: Message(
         role: Role.model,
         content: [TextPart(text: transcript.trim())],
       ),
-      raw: raw,
     );
   } on GenkitException {
     rethrow;
@@ -225,7 +247,154 @@ Media? _extractAudioMedia(List<Message> messages) {
   return (bytes: bytes, contentType: contentType, filename: filename);
 }
 
+List<_MultipartField> _buildTranscriptionFields({
+  required ModelRequest request,
+  required String modelName,
+  required double? temperature,
+  required String? configuredResponseFormat,
+  required Map<String, dynamic>? rawConfig,
+  required bool useTranslationEndpoint,
+}) {
+  final config = Map<String, dynamic>.from(rawConfig ?? const {});
+  final fields = <_MultipartField>[];
+  _appendField(fields, 'model', modelName);
+
+  final explicitPrompt = _takeOptionalString(config, ['prompt']);
+  final prompt =
+      explicitPrompt ?? _extractTranscriptionPrompt(request.messages);
+  if (prompt != null && prompt.isNotEmpty) {
+    _appendField(fields, 'prompt', prompt);
+  }
+
+  final rawCustomResponseFormat = _takeRawValue(config, ['response_format']);
+  final camelResponseFormat = _takeRawValue(config, ['responseFormat']);
+  final language = _takeOptionalString(config, ['language']);
+  final chunkingStrategy = _takeRawValue(config, [
+    'chunking_strategy',
+    'chunkingStrategy',
+  ]);
+  final include = _takeStringList(config, ['include[]', 'include']);
+  final timestampGranularities = _takeStringList(config, [
+    'timestamp_granularities[]',
+    'timestamp_granularities',
+    'timestampGranularities',
+  ]);
+  final knownSpeakerNames = _takeStringList(config, [
+    'known_speaker_names[]',
+    'known_speaker_names',
+    'knownSpeakerNames',
+  ]);
+  final knownSpeakerReferences = _takeStringList(config, [
+    'known_speaker_references[]',
+    'known_speaker_references',
+    'knownSpeakerReferences',
+  ]);
+  final streamValue = _takeRawValue(config, ['stream']);
+  config.remove('temperature');
+  config.remove('version');
+  config.remove('maxOutputTokens');
+  config.remove('stopSequences');
+  config.remove('topK');
+  config.remove('topP');
+  config.remove('maxTokens');
+  config.remove('stop');
+  config.remove('presencePenalty');
+  config.remove('frequencyPenalty');
+  config.remove('seed');
+  config.remove('user');
+  config.remove('jsonMode');
+  config.remove('visualDetailLevel');
+  config.remove('translate');
+
+  if (temperature != null) {
+    _appendField(fields, 'temperature', temperature.toString());
+  }
+
+  final responseFormat = _resolveTranscriptionResponseFormat(
+    configuredResponseFormat: configuredResponseFormat,
+    rawConfigResponseFormat: rawCustomResponseFormat is String
+        ? rawCustomResponseFormat
+        : null,
+    camelConfigResponseFormat: camelResponseFormat is String
+        ? camelResponseFormat
+        : null,
+    outputFormat: request.output?.format,
+    outputContentType: request.output?.contentType,
+  );
+  _appendField(fields, 'response_format', responseFormat);
+
+  if (responseFormat == 'diarized_json' && timestampGranularities.isNotEmpty) {
+    throw GenkitException(
+      'timestamp_granularities is not compatible with response_format diarized_json.',
+    );
+  }
+
+  if (timestampGranularities.isNotEmpty && responseFormat != 'verbose_json') {
+    throw GenkitException(
+      'timestamp_granularities requires response_format verbose_json.',
+    );
+  }
+
+  if (include.isNotEmpty && responseFormat != 'json') {
+    throw GenkitException('include requires response_format json.');
+  }
+  for (final includeValue in include) {
+    if (!_transcriptionIncludeValues.contains(includeValue)) {
+      throw GenkitException('Unsupported include value: $includeValue');
+    }
+  }
+
+  if (language != null) {
+    _appendField(fields, 'language', language);
+  }
+
+  if (chunkingStrategy != null) {
+    _appendField(
+      fields,
+      'chunking_strategy',
+      chunkingStrategy is Map || chunkingStrategy is List
+          ? jsonEncode(chunkingStrategy)
+          : chunkingStrategy.toString(),
+    );
+  }
+
+  _appendRepeatedFields(fields, 'include[]', include);
+  _appendRepeatedFields(
+    fields,
+    'timestamp_granularities[]',
+    timestampGranularities,
+  );
+  _appendRepeatedFields(fields, 'known_speaker_names[]', knownSpeakerNames);
+  _appendRepeatedFields(
+    fields,
+    'known_speaker_references[]',
+    knownSpeakerReferences,
+  );
+
+  for (final entry in config.entries) {
+    _appendConfigValue(fields, entry.key, entry.value);
+  }
+
+  final stream = _parseBool(streamValue);
+  if (stream == true) {
+    throw GenkitException(
+      'Transcription parameter stream=true is not supported by this plugin.',
+    );
+  }
+  if (!useTranslationEndpoint) {
+    _appendField(fields, 'stream', 'false');
+  }
+  return fields;
+}
+
 String? _extractTranscriptionPrompt(List<Message> messages) {
+  if (messages.isEmpty) return null;
+
+  final firstMessagePrompt = messages.first.text.trim();
+  if (firstMessagePrompt.isNotEmpty) {
+    return firstMessagePrompt;
+  }
+
   for (final message in messages.reversed) {
     if (message.role != Role.user) continue;
 
@@ -235,31 +404,163 @@ String? _extractTranscriptionPrompt(List<Message> messages) {
   return null;
 }
 
-String? _resolveTranscriptionResponseFormat(
-  String? configuredResponseFormat,
-  String? format,
-  String? contentType,
-) {
-  final normalizedConfigured = normalizeOptionalString(
-    configuredResponseFormat,
+String _resolveTranscriptionResponseFormat({
+  required String? configuredResponseFormat,
+  required String? rawConfigResponseFormat,
+  required String? camelConfigResponseFormat,
+  required String? outputFormat,
+  required String? outputContentType,
+}) {
+  final normalizedOutputFormat = normalizeOptionalString(
+    outputFormat,
   )?.toLowerCase();
-  if (normalizedConfigured != null) {
-    const allowed = {'json', 'text', 'srt', 'verbose_json', 'vtt'};
-    if (allowed.contains(normalizedConfigured)) {
-      return normalizedConfigured;
-    }
+  if (normalizedOutputFormat == 'media') {
+    throw GenkitException('Output format media is not supported.');
   }
 
-  final normalizedFormat = normalizeOptionalString(format)?.toLowerCase();
-  if (normalizedFormat != null) {
-    const allowed = {'json', 'text', 'srt', 'verbose_json', 'vtt'};
-    if (allowed.contains(normalizedFormat)) {
-      return normalizedFormat;
-    }
+  final customResponseFormat =
+      normalizeOptionalString(configuredResponseFormat)?.toLowerCase() ??
+      normalizeOptionalString(camelConfigResponseFormat)?.toLowerCase() ??
+      normalizeOptionalString(rawConfigResponseFormat)?.toLowerCase();
+
+  if (normalizedOutputFormat != null &&
+      customResponseFormat != null &&
+      normalizedOutputFormat == 'json' &&
+      customResponseFormat != 'json' &&
+      customResponseFormat != 'verbose_json') {
+    throw GenkitException(
+      'Custom response format $customResponseFormat is not compatible with output format $normalizedOutputFormat',
+    );
   }
 
-  if (contentType == 'application/json') {
+  if (customResponseFormat != null) {
+    if (!_transcriptionResponseFormats.contains(customResponseFormat)) {
+      throw GenkitException(
+        'Unsupported transcription response format: $customResponseFormat',
+      );
+    }
+    return customResponseFormat;
+  }
+
+  if (normalizedOutputFormat != null) {
+    if (!_transcriptionResponseFormats.contains(normalizedOutputFormat)) {
+      throw GenkitException(
+        'Unsupported transcription output format: $normalizedOutputFormat',
+      );
+    }
+    return normalizedOutputFormat;
+  }
+
+  if (outputContentType == 'application/json') {
     return 'json';
+  }
+
+  return 'text';
+}
+
+bool _shouldUseTranslationEndpoint({
+  required String modelName,
+  required bool? configuredTranslate,
+  required Map<String, dynamic>? rawConfig,
+}) {
+  if (!_isWhisperModelName(modelName)) {
+    return false;
+  }
+
+  if (configuredTranslate == true) {
+    return true;
+  }
+
+  final rawTranslate = rawConfig?['translate'];
+  if (rawTranslate is bool) {
+    return rawTranslate;
+  }
+  if (rawTranslate is String) {
+    return rawTranslate.toLowerCase() == 'true';
+  }
+  return false;
+}
+
+bool _isWhisperModelName(String modelName) {
+  return modelName.toLowerCase().contains('whisper');
+}
+
+void _appendField(List<_MultipartField> fields, String name, String value) {
+  fields.add((name: name, value: value));
+}
+
+void _appendRepeatedFields(
+  List<_MultipartField> fields,
+  String name,
+  List<String> values,
+) {
+  for (final value in values) {
+    _appendField(fields, name, value);
+  }
+}
+
+Object? _takeRawValue(Map<String, dynamic> config, List<String> keys) {
+  for (final key in keys) {
+    if (config.containsKey(key)) {
+      return config.remove(key);
+    }
+  }
+  return null;
+}
+
+String? _takeOptionalString(Map<String, dynamic> config, List<String> keys) {
+  return _normalizeStringValue(_takeRawValue(config, keys));
+}
+
+List<String> _takeStringList(Map<String, dynamic> config, List<String> keys) {
+  final value = _takeRawValue(config, keys);
+  if (value == null) return const [];
+
+  if (value is Iterable) {
+    return value
+        .map(_normalizeStringValue)
+        .whereType<String>()
+        .toList(growable: false);
+  }
+
+  final normalized = _normalizeStringValue(value);
+  if (normalized == null) return const [];
+  return [normalized];
+}
+
+String? _normalizeStringValue(Object? value) {
+  if (value == null) return null;
+  final trimmed = value.toString().trim();
+  if (trimmed.isEmpty) return null;
+  return trimmed;
+}
+
+void _appendConfigValue(
+  List<_MultipartField> fields,
+  String key,
+  Object? value,
+) {
+  if (value == null) return;
+  if (value is Iterable) {
+    for (final item in value) {
+      if (item == null) continue;
+      _appendField(fields, key, item.toString());
+    }
+    return;
+  }
+  if (value is Map) {
+    _appendField(fields, key, jsonEncode(value));
+    return;
+  }
+  _appendField(fields, key, value.toString());
+}
+
+bool? _parseBool(Object? value) {
+  if (value is bool) return value;
+  if (value is String) {
+    final normalized = value.trim().toLowerCase();
+    if (normalized == 'true') return true;
+    if (normalized == 'false') return false;
   }
   return null;
 }
@@ -273,6 +574,11 @@ String? _extractTranscriptionText(Map<String, dynamic> responseBody) {
   final transcript = responseBody['transcript'];
   if (transcript is String && transcript.trim().isNotEmpty) {
     return transcript;
+  }
+
+  final response = responseBody['response'];
+  if (response is String && response.trim().isNotEmpty) {
+    return response;
   }
 
   return null;

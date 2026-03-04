@@ -310,6 +310,10 @@ class OpenAIPlugin extends GenkitPlugin {
             temperature:
                 transcriptionOptions.temperature ?? options.temperature,
             configuredResponseFormat: transcriptionOptions.responseFormat,
+            configuredTranslate: transcriptionOptions.translate,
+            rawConfig: request.config == null
+                ? null
+                : Map<String, dynamic>.from(request.config!),
             ctx: ctx,
           );
         }

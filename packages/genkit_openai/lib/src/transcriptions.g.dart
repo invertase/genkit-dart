@@ -27,8 +27,16 @@ class OpenAITranscriptionOptions {
 
   OpenAITranscriptionOptions._(this._json);
 
-  OpenAITranscriptionOptions({double? temperature, String? responseFormat}) {
-    _json = {'temperature': ?temperature, 'responseFormat': ?responseFormat};
+  OpenAITranscriptionOptions({
+    double? temperature,
+    String? responseFormat,
+    bool? translate,
+  }) {
+    _json = {
+      'temperature': ?temperature,
+      'responseFormat': ?responseFormat,
+      'translate': ?translate,
+    };
   }
 
   late final Map<String, dynamic> _json;
@@ -60,6 +68,18 @@ class OpenAITranscriptionOptions {
     }
   }
 
+  bool? get translate {
+    return _json['translate'] as bool?;
+  }
+
+  set translate(bool? value) {
+    if (value == null) {
+      _json.remove('translate');
+    } else {
+      _json['translate'] = value;
+    }
+  }
+
   @override
   String toString() {
     return _json.toString();
@@ -87,8 +107,16 @@ class _OpenAITranscriptionOptionsTypeFactory
           properties: {
             'temperature': $Schema.number(minimum: 0.0, maximum: 1.0),
             'responseFormat': $Schema.string(
-              enumValues: ['json', 'text', 'srt', 'verbose_json', 'vtt'],
+              enumValues: [
+                'json',
+                'text',
+                'srt',
+                'verbose_json',
+                'vtt',
+                'diarized_json',
+              ],
             ),
+            'translate': $Schema.boolean(),
           },
           required: [],
         )

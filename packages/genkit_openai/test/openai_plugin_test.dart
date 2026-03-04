@@ -72,6 +72,20 @@ void main() {
       });
       expect(options.responseFormat, 'verbose_json');
     });
+
+    test('parses diarized response format', () {
+      final options = OpenAITranscriptionOptions.$schema.parse({
+        'responseFormat': 'diarized_json',
+      });
+      expect(options.responseFormat, 'diarized_json');
+    });
+
+    test('parses translate', () {
+      final options = OpenAITranscriptionOptions.$schema.parse({
+        'translate': true,
+      });
+      expect(options.translate, true);
+    });
   });
 
   group('Transcription requests', () {
@@ -137,6 +151,7 @@ void main() {
       expect(fields['prompt'], ['fallback prompt']);
       expect(fields['response_format'], ['verbose_json']);
       expect(fields['temperature'], ['0.2']);
+      expect(fields['stream'], ['false']);
       expect(fields.containsKey('language'), isFalse);
       expect(fields.containsKey('include[]'), isFalse);
       expect(fields.containsKey('timestamp_granularities[]'), isFalse);
@@ -144,6 +159,413 @@ void main() {
       expect(fields.containsKey('known_speaker_names[]'), isFalse);
       expect(fields.containsKey('known_speaker_references[]'), isFalse);
     });
+
+    test('defaults response_format to text when unspecified', () async {
+      final capturedFields = Completer<Map<String, List<String>>>();
+      final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      final subscription = server.listen((request) async {
+        final boundary = request.headers.contentType?.parameters['boundary'];
+        final body = await utf8.decoder.bind(request).join();
+
+        if (boundary != null && !capturedFields.isCompleted) {
+          capturedFields.complete(_parseMultipartFields(body, boundary));
+        }
+
+        request.response.statusCode = 200;
+        request.response.headers.contentType = ContentType.json;
+        request.response.write('{"text":"transcribed"}');
+        await request.response.close();
+      });
+
+      addTearDown(() async {
+        await subscription.cancel();
+        await server.close(force: true);
+      });
+
+      final ai = Genkit(
+        plugins: [
+          openAI(
+            apiKey: 'test-key',
+            baseUrl: 'http://127.0.0.1:${server.port}/v1',
+          ),
+        ],
+      );
+
+      final response = await ai.generate(
+        model: openAI.transcribe('whisper-1'),
+        messages: [
+          Message(
+            role: Role.user,
+            content: [
+              MediaPart(
+                media: Media(
+                  url: 'data:audio/wav;base64,UklGRg==',
+                  contentType: 'audio/wav',
+                ),
+              ),
+            ],
+          ),
+        ],
+      );
+
+      expect(response.text, 'transcribed');
+
+      final fields = await capturedFields.future.timeout(
+        const Duration(seconds: 2),
+      );
+      expect(fields['model'], ['whisper-1']);
+      expect(fields['response_format'], ['text']);
+      expect(fields['stream'], ['false']);
+    });
+
+    test('accepts snake_case response_format from raw config', () async {
+      final capturedFields = Completer<Map<String, List<String>>>();
+      final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      final subscription = server.listen((request) async {
+        final boundary = request.headers.contentType?.parameters['boundary'];
+        final body = await utf8.decoder.bind(request).join();
+
+        if (boundary != null && !capturedFields.isCompleted) {
+          capturedFields.complete(_parseMultipartFields(body, boundary));
+        }
+
+        request.response.statusCode = 200;
+        request.response.headers.contentType = ContentType.json;
+        request.response.write('{"text":"transcribed"}');
+        await request.response.close();
+      });
+
+      addTearDown(() async {
+        await subscription.cancel();
+        await server.close(force: true);
+      });
+
+      final ai = Genkit(
+        plugins: [
+          openAI(
+            apiKey: 'test-key',
+            baseUrl: 'http://127.0.0.1:${server.port}/v1',
+          ),
+        ],
+      );
+
+      final response = await ai.generate(
+        model: openAI.transcribe('whisper-1'),
+        messages: [
+          Message(
+            role: Role.user,
+            content: [
+              MediaPart(
+                media: Media(
+                  url: 'data:audio/wav;base64,UklGRg==',
+                  contentType: 'audio/wav',
+                ),
+              ),
+            ],
+          ),
+        ],
+        config: {'response_format': 'srt'},
+      );
+
+      expect(response.text, 'transcribed');
+      final fields = await capturedFields.future.timeout(
+        const Duration(seconds: 2),
+      );
+      expect(fields['response_format'], ['srt']);
+    });
+
+    test('maps documented multipart transcription params', () async {
+      final capturedFields = Completer<Map<String, List<String>>>();
+      final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      final subscription = server.listen((request) async {
+        final boundary = request.headers.contentType?.parameters['boundary'];
+        final body = await utf8.decoder.bind(request).join();
+
+        if (boundary != null && !capturedFields.isCompleted) {
+          capturedFields.complete(_parseMultipartFields(body, boundary));
+        }
+
+        request.response.statusCode = 200;
+        request.response.headers.contentType = ContentType.json;
+        request.response.write('{"text":"transcribed"}');
+        await request.response.close();
+      });
+
+      addTearDown(() async {
+        await subscription.cancel();
+        await server.close(force: true);
+      });
+
+      final ai = Genkit(
+        plugins: [
+          openAI(
+            apiKey: 'test-key',
+            baseUrl: 'http://127.0.0.1:${server.port}/v1',
+          ),
+        ],
+      );
+
+      final response = await ai.generate(
+        model: openAI.transcribe('whisper-1'),
+        messages: [
+          Message(
+            role: Role.user,
+            content: [
+              MediaPart(
+                media: Media(
+                  url: 'data:audio/wav;base64,UklGRg==',
+                  contentType: 'audio/wav',
+                ),
+              ),
+            ],
+          ),
+        ],
+        config: {
+          'response_format': 'verbose_json',
+          'language': 'en',
+          'timestampGranularities': ['word', 'segment'],
+          'chunkingStrategy': 'auto',
+          'knownSpeakerNames': ['Alice'],
+          'knownSpeakerReferences': ['data:audio/wav;base64,QUJD'],
+        },
+      );
+
+      expect(response.text, 'transcribed');
+      final fields = await capturedFields.future.timeout(
+        const Duration(seconds: 2),
+      );
+      expect(fields['response_format'], ['verbose_json']);
+      expect(fields['language'], ['en']);
+      expect(fields['timestamp_granularities[]'], ['word', 'segment']);
+      expect(fields['chunking_strategy'], ['auto']);
+      expect(fields['known_speaker_names[]'], ['Alice']);
+      expect(fields['known_speaker_references[]'], [
+        'data:audio/wav;base64,QUJD',
+      ]);
+    });
+
+    test('maps include[] for json responses', () async {
+      final capturedFields = Completer<Map<String, List<String>>>();
+      final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      final subscription = server.listen((request) async {
+        final boundary = request.headers.contentType?.parameters['boundary'];
+        final body = await utf8.decoder.bind(request).join();
+
+        if (boundary != null && !capturedFields.isCompleted) {
+          capturedFields.complete(_parseMultipartFields(body, boundary));
+        }
+
+        request.response.statusCode = 200;
+        request.response.headers.contentType = ContentType.json;
+        request.response.write('{"text":"transcribed"}');
+        await request.response.close();
+      });
+
+      addTearDown(() async {
+        await subscription.cancel();
+        await server.close(force: true);
+      });
+
+      final ai = Genkit(
+        plugins: [
+          openAI(
+            apiKey: 'test-key',
+            baseUrl: 'http://127.0.0.1:${server.port}/v1',
+          ),
+        ],
+      );
+
+      final response = await ai.generate(
+        model: openAI.transcribe('whisper-1'),
+        messages: [
+          Message(
+            role: Role.user,
+            content: [
+              MediaPart(
+                media: Media(
+                  url: 'data:audio/wav;base64,UklGRg==',
+                  contentType: 'audio/wav',
+                ),
+              ),
+            ],
+          ),
+        ],
+        config: {
+          'response_format': 'json',
+          'include': ['logprobs'],
+        },
+      );
+
+      expect(response.text, 'transcribed');
+      final fields = await capturedFields.future.timeout(
+        const Duration(seconds: 2),
+      );
+      expect(fields['response_format'], ['json']);
+      expect(fields['include[]'], ['logprobs']);
+    });
+
+    test('rejects stream=true in transcription config', () async {
+      final ai = Genkit(
+        plugins: [openAI(apiKey: 'test-key', baseUrl: 'http://127.0.0.1:1/v1')],
+      );
+
+      expect(
+        () => ai.generate(
+          model: openAI.transcribe('whisper-1'),
+          messages: [
+            Message(
+              role: Role.user,
+              content: [
+                MediaPart(
+                  media: Media(
+                    url: 'data:audio/wav;base64,UklGRg==',
+                    contentType: 'audio/wav',
+                  ),
+                ),
+              ],
+            ),
+          ],
+          config: {'stream': true},
+        ),
+        throwsA(isA<GenkitException>()),
+      );
+    });
+
+    test('rejects include[] when response_format is not json', () async {
+      final ai = Genkit(
+        plugins: [openAI(apiKey: 'test-key', baseUrl: 'http://127.0.0.1:1/v1')],
+      );
+
+      expect(
+        () => ai.generate(
+          model: openAI.transcribe('whisper-1'),
+          messages: [
+            Message(
+              role: Role.user,
+              content: [
+                MediaPart(
+                  media: Media(
+                    url: 'data:audio/wav;base64,UklGRg==',
+                    contentType: 'audio/wav',
+                  ),
+                ),
+              ],
+            ),
+          ],
+          config: {
+            'response_format': 'text',
+            'include': ['logprobs'],
+          },
+        ),
+        throwsA(isA<GenkitException>()),
+      );
+    });
+
+    test('parses text/plain transcription responses', () async {
+      final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      final subscription = server.listen((request) async {
+        await utf8.decoder.bind(request).join();
+        request.response.statusCode = 200;
+        request.response.headers.contentType = ContentType.text;
+        request.response.write('plain transcript');
+        await request.response.close();
+      });
+
+      addTearDown(() async {
+        await subscription.cancel();
+        await server.close(force: true);
+      });
+
+      final ai = Genkit(
+        plugins: [
+          openAI(
+            apiKey: 'test-key',
+            baseUrl: 'http://127.0.0.1:${server.port}/v1',
+          ),
+        ],
+      );
+
+      final response = await ai.generate(
+        model: openAI.transcribe('whisper-1'),
+        messages: [
+          Message(
+            role: Role.user,
+            content: [
+              MediaPart(
+                media: Media(
+                  url: 'data:audio/wav;base64,UklGRg==',
+                  contentType: 'audio/wav',
+                ),
+              ),
+            ],
+          ),
+        ],
+      );
+
+      expect(response.text, 'plain transcript');
+      expect(response.raw, isNull);
+    });
+
+    test(
+      'routes whisper translate requests to translations endpoint',
+      () async {
+        final requestedPaths = <String>[];
+        final capturedFields = Completer<Map<String, List<String>>>();
+        final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+        final subscription = server.listen((request) async {
+          requestedPaths.add(request.uri.path);
+          final boundary = request.headers.contentType?.parameters['boundary'];
+          final body = await utf8.decoder.bind(request).join();
+          if (boundary != null && !capturedFields.isCompleted) {
+            capturedFields.complete(_parseMultipartFields(body, boundary));
+          }
+          request.response.statusCode = 200;
+          request.response.headers.contentType = ContentType.json;
+          request.response.write('{"text":"translated"}');
+          await request.response.close();
+        });
+
+        addTearDown(() async {
+          await subscription.cancel();
+          await server.close(force: true);
+        });
+
+        final ai = Genkit(
+          plugins: [
+            openAI(
+              apiKey: 'test-key',
+              baseUrl: 'http://127.0.0.1:${server.port}/v1',
+            ),
+          ],
+        );
+
+        final response = await ai.generate(
+          model: openAI.transcribe('whisper-1'),
+          messages: [
+            Message(
+              role: Role.user,
+              content: [
+                MediaPart(
+                  media: Media(
+                    url: 'data:audio/wav;base64,UklGRg==',
+                    contentType: 'audio/wav',
+                  ),
+                ),
+              ],
+            ),
+          ],
+          config: OpenAITranscriptionOptions(translate: true),
+        );
+
+        expect(response.text, 'translated');
+        expect(requestedPaths, contains('/v1/audio/translations'));
+        expect(requestedPaths, isNot(contains('/v1/audio/transcriptions')));
+        final fields = await capturedFields.future.timeout(
+          const Duration(seconds: 2),
+        );
+        expect(fields.containsKey('stream'), isFalse);
+      },
+    );
   });
 
   group('GenkitConverter.toOpenAIMessage', () {
@@ -374,6 +796,7 @@ void main() {
       expect(info.supports?['tools'], false);
       expect(info.supports?['systemRole'], false);
       expect(info.supports?['media'], true);
+      expect(info.supports?['output'], ['text', 'json']);
     });
 
     test('isTranscriptionModel identifies whisper/transcribe models', () {

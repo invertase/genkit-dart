@@ -18,7 +18,10 @@ import 'dart:io';
 import 'package:genkit/genkit.dart';
 import 'package:genkit_openai/genkit_openai.dart';
 
-/// Defines a flow that transcribes base64 data URL audio using Whisper.
+/// Defines a flow that performs basic speech-to-text on a data URL.
+///
+/// This is the simplest transcription path: provide `data:audio/...;base64,...`
+/// and get plain text back.
 Flow<String, String, void, void> defineWhisperTranscriptionFlow(
   Genkit ai, {
   String model = 'whisper-1',
@@ -29,42 +32,143 @@ Flow<String, String, void, void> defineWhisperTranscriptionFlow(
       defaultValue: 'data:audio/wav;base64,<base64-audio-bytes>',
     ),
     outputSchema: .string(),
-    fn: (audioDataUrl, _) async {
-      final contentType = _extractAudioMimeTypeFromDataUrl(audioDataUrl);
-
-      if (contentType == null) {
-        throw ArgumentError(
-          'Input must be a base64 audio data URL (data:audio/...;base64,...).',
-        );
-      }
-
-      final response = await ai.generate(
-        model: openAI.model(model),
-        messages: [
-          Message(
-            role: Role.user,
-            content: [
-              TextPart(
-                text: 'Transcribe this audio. Return only the transcript text.',
-              ),
-              MediaPart(
-                media: Media(url: audioDataUrl, contentType: contentType),
-              ),
-            ],
-          ),
-        ],
-      );
-
-      final text = response.text.trim();
-      if (text.isEmpty) {
-        throw StateError('Model returned empty transcription.');
-      }
-      return text;
-    },
+    fn: (audioDataUrl, _) => _generateTranscriptFromDataUrl(
+      ai: ai,
+      model: model,
+      audioDataUrl: audioDataUrl,
+      prompt: 'Transcribe this audio. Return only the transcript text.',
+    ),
   );
 }
 
-/// Defines a flow that transcribes a local WAV/MP3 file via Whisper.
+/// Defines a flow that demonstrates generic passthrough config parameters.
+///
+/// This uses documented params (`response_format`, `include`, `language`) and
+/// shows where future params can be passed through as raw config keys.
+Flow<String, String, void, void> defineWhisperPassthroughTranscriptionFlow(
+  Genkit ai, {
+  String model = 'whisper-1',
+}) {
+  return ai.defineFlow(
+    name: 'whisperTranscribeWithPassthrough',
+    inputSchema: .string(
+      defaultValue: 'data:audio/wav;base64,<base64-audio-bytes>',
+    ),
+    outputSchema: .string(),
+    fn: (audioDataUrl, _) => _generateTranscriptFromDataUrl(
+      ai: ai,
+      model: model,
+      audioDataUrl: audioDataUrl,
+      prompt: 'Transcribe this audio. Return only transcript text.',
+      config: <String, dynamic>{
+        'response_format': 'json',
+        'include': ['logprobs'],
+        'language': 'en',
+      },
+    ),
+  );
+}
+
+/// Defines a flow that demonstrates `response_format=json` with logprobs.
+Flow<String, String, void, void> defineWhisperJsonLogprobsFlow(
+  Genkit ai, {
+  String model = 'whisper-1',
+}) {
+  return ai.defineFlow(
+    name: 'whisperTranscribeJsonLogprobs',
+    inputSchema: .string(
+      defaultValue: 'data:audio/wav;base64,<base64-audio-bytes>',
+    ),
+    outputSchema: .string(),
+    fn: (audioDataUrl, _) => _generateTranscriptFromDataUrl(
+      ai: ai,
+      model: model,
+      audioDataUrl: audioDataUrl,
+      prompt: 'Transcribe this audio. Return transcript text.',
+      config: <String, dynamic>{
+        'response_format': 'json',
+        'include': ['logprobs'],
+        'language': 'en',
+      },
+    ),
+  );
+}
+
+/// Defines a flow that requests word and segment timestamps.
+Flow<String, String, void, void> defineWhisperVerboseTimestampFlow(
+  Genkit ai, {
+  String model = 'whisper-1',
+}) {
+  return ai.defineFlow(
+    name: 'whisperTranscribeVerboseTimestamps',
+    inputSchema: .string(
+      defaultValue: 'data:audio/wav;base64,<base64-audio-bytes>',
+    ),
+    outputSchema: .string(),
+    fn: (audioDataUrl, _) => _generateTranscriptFromDataUrl(
+      ai: ai,
+      model: model,
+      audioDataUrl: audioDataUrl,
+      prompt: 'Transcribe this audio. Return transcript text.',
+      config: <String, dynamic>{
+        'response_format': 'verbose_json',
+        'timestampGranularities': ['word', 'segment'],
+        'language': 'en',
+      },
+    ),
+  );
+}
+
+/// Defines a flow that demonstrates diarized output with speaker hints.
+Flow<String, String, void, void> defineWhisperDiarizedFlow(
+  Genkit ai, {
+  String model = 'whisper-1',
+}) {
+  return ai.defineFlow(
+    name: 'whisperTranscribeDiarized',
+    inputSchema: .string(
+      defaultValue: 'data:audio/wav;base64,<base64-audio-bytes>',
+    ),
+    outputSchema: .string(),
+    fn: (audioDataUrl, _) => _generateTranscriptFromDataUrl(
+      ai: ai,
+      model: model,
+      audioDataUrl: audioDataUrl,
+      prompt: 'Transcribe this audio and use diarization if available.',
+      config: <String, dynamic>{
+        'response_format': 'diarized_json',
+        'chunkingStrategy': 'auto',
+        'knownSpeakerNames': ['Speaker A', 'Speaker B'],
+      },
+    ),
+  );
+}
+
+/// Defines a flow that translates source speech into English.
+///
+/// The plugin-level `translate` option routes the request to
+/// `/audio/translations`.
+Flow<String, String, void, void> defineWhisperTranslationFlow(
+  Genkit ai, {
+  String model = 'whisper-1',
+}) {
+  return ai.defineFlow(
+    name: 'whisperTranslateToEnglish',
+    inputSchema: .string(
+      defaultValue: 'data:audio/wav;base64,<base64-audio-bytes>',
+    ),
+    outputSchema: .string(),
+    fn: (audioDataUrl, _) => _generateTranscriptFromDataUrl(
+      ai: ai,
+      model: model,
+      audioDataUrl: audioDataUrl,
+      prompt: 'Translate this audio into English.',
+      config: OpenAITranscriptionOptions(translate: true),
+    ),
+  );
+}
+
+/// Defines a flow that transcribes a local audio file path.
 Flow<String, String, void, void> defineWhisperAudioFileTranscriptionFlow(
   Genkit ai, {
   String model = 'whisper-1',
@@ -74,42 +178,18 @@ Flow<String, String, void, void> defineWhisperAudioFileTranscriptionFlow(
     inputSchema: .string(defaultValue: './sample.wav'),
     outputSchema: .string(),
     fn: (audioPath, _) async {
-      final file = File(audioPath);
-      if (!await file.exists()) {
-        throw ArgumentError('Audio file not found: $audioPath');
-      }
-
-      final bytes = await file.readAsBytes();
-      final mimeType = _audioMimeTypeFromPath(audioPath);
-      final dataUrl = 'data:$mimeType;base64,${base64Encode(bytes)}';
-
-      final response = await ai.generate(
-        model: openAI.model(model),
-        messages: [
-          Message(
-            role: Role.user,
-            content: [
-              TextPart(
-                text: 'Transcribe this audio. Return only the transcript text.',
-              ),
-              MediaPart(
-                media: Media(url: dataUrl, contentType: mimeType),
-              ),
-            ],
-          ),
-        ],
+      final dataUrl = await _readFileAsDataUrl(audioPath);
+      return _generateTranscriptFromDataUrl(
+        ai: ai,
+        model: model,
+        audioDataUrl: dataUrl,
+        prompt: 'Transcribe this audio. Return only the transcript text.',
       );
-
-      final text = response.text.trim();
-      if (text.isEmpty) {
-        throw StateError('Model returned empty transcription.');
-      }
-      return text;
     },
   );
 }
 
-/// Defines a flow that transcribes a local video file via Whisper.
+/// Defines a flow that transcribes a local video file path (audio track).
 Flow<String, String, void, void> defineWhisperVideoFileTranscriptionFlow(
   Genkit ai, {
   String model = 'whisper-1',
@@ -119,38 +199,14 @@ Flow<String, String, void, void> defineWhisperVideoFileTranscriptionFlow(
     inputSchema: .string(defaultValue: './sample.mp4'),
     outputSchema: .string(),
     fn: (videoPath, _) async {
-      final file = File(videoPath);
-      if (!await file.exists()) {
-        throw ArgumentError('Video file not found: $videoPath');
-      }
-
-      final bytes = await file.readAsBytes();
-      final mimeType = 'video/mp4';
-      final dataUrl = 'data:$mimeType;base64,${base64Encode(bytes)}';
-
-      final response = await ai.generate(
-        model: openAI.model(model),
-        messages: [
-          Message(
-            role: Role.user,
-            content: [
-              TextPart(
-                text:
-                    'Transcribe the audio in this MP4 file. Return only the transcript text.',
-              ),
-              MediaPart(
-                media: Media(url: dataUrl, contentType: mimeType),
-              ),
-            ],
-          ),
-        ],
+      final dataUrl = await _readFileAsDataUrl(videoPath);
+      return _generateTranscriptFromDataUrl(
+        ai: ai,
+        model: model,
+        audioDataUrl: dataUrl,
+        prompt:
+            'Transcribe the audio in this MP4 file. Return only the transcript text.',
       );
-
-      final text = response.text.trim();
-      if (text.isEmpty) {
-        throw StateError('Model returned empty transcription.');
-      }
-      return text;
     },
   );
 }
@@ -163,19 +219,72 @@ void main() {
 
   final ai = Genkit(plugins: [openAI(apiKey: apiKey)]);
   defineWhisperTranscriptionFlow(ai);
+  defineWhisperPassthroughTranscriptionFlow(ai);
+  defineWhisperJsonLogprobsFlow(ai);
+  defineWhisperVerboseTimestampFlow(ai);
+  defineWhisperDiarizedFlow(ai);
+  defineWhisperTranslationFlow(ai);
   defineWhisperAudioFileTranscriptionFlow(ai);
   defineWhisperVideoFileTranscriptionFlow(ai);
 }
 
+Future<String> _generateTranscriptFromDataUrl({
+  required Genkit ai,
+  required String model,
+  required String audioDataUrl,
+  required String prompt,
+  Object? config,
+}) async {
+  final contentType = _extractAudioMimeTypeFromDataUrl(audioDataUrl);
+  if (contentType == null) {
+    throw ArgumentError(
+      'Input must be a base64 media data URL (data:audio/...;base64,... or data:video/...;base64,...).',
+    );
+  }
+
+  final response = await ai.generate(
+    model: openAI.transcribe(model),
+    messages: [
+      Message(
+        role: Role.user,
+        content: [
+          TextPart(text: prompt),
+          MediaPart(
+            media: Media(url: audioDataUrl, contentType: contentType),
+          ),
+        ],
+      ),
+    ],
+    config: config,
+  );
+
+  final text = response.text.trim();
+  if (text.isEmpty) {
+    throw StateError('Model returned empty transcription.');
+  }
+  return text;
+}
+
+Future<String> _readFileAsDataUrl(String path) async {
+  final file = File(path);
+  if (!await file.exists()) {
+    throw ArgumentError('File not found: $path');
+  }
+
+  final bytes = await file.readAsBytes();
+  final mimeType = _mediaMimeTypeFromPath(path);
+  return 'data:$mimeType;base64,${base64Encode(bytes)}';
+}
+
 String? _extractAudioMimeTypeFromDataUrl(String url) {
   final match = RegExp(
-    r'^data:(audio\/[^;]+);base64,',
+    r'^data:((?:audio|video)\/[^;]+);base64,',
     caseSensitive: false,
   ).firstMatch(url);
   return match?.group(1);
 }
 
-String _audioMimeTypeFromPath(String path) {
+String _mediaMimeTypeFromPath(String path) {
   final lower = path.toLowerCase();
   if (lower.endsWith('.flac')) return 'audio/flac';
   if (lower.endsWith('.mp3')) return 'audio/mpeg';
@@ -188,6 +297,6 @@ String _audioMimeTypeFromPath(String path) {
   if (lower.endsWith('.webm')) return 'audio/webm';
 
   throw ArgumentError(
-    'Unsupported audio file extension for "$path". Supported extensions: .flac, .mp3, .mp4, .mpeg, .mpga, .m4a, .ogg, .wav, .webm.',
+    'Unsupported media file extension for "$path". Supported extensions: .flac, .mp3, .mp4, .mpeg, .mpga, .m4a, .ogg, .wav, .webm.',
   );
 }

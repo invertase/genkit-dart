@@ -291,14 +291,22 @@ class OpenAIPlugin extends GenkitPlugin {
 
           final modelType = resolvedModelType;
           final hasInputAudio = containsInputAudio(requestInput.messages);
-          final modalities = resolveOpenAIModalities(
+          final configuredModalities = _resolveConfiguredModalities(
+            options.responseModalities,
+            rawConfig,
+          );
+          final resolvedModalities = resolveOpenAIModalities(
             modelType: modelType,
-            configured: _resolveConfiguredModalities(
-              options.responseModalities,
-              rawConfig,
-            ),
+            configured: configuredModalities,
             modelId: resolvedModelId,
             hasInputAudio: hasInputAudio,
+          );
+          final modalities = _ensureAudioRequirements(
+            modelType: modelType,
+            modelId: resolvedModelId,
+            hasInputAudio: hasInputAudio,
+            configuredModalities: configuredModalities,
+            resolvedModalities: resolvedModalities,
           );
 
           final audioOptions = resolveOpenAIAudioOptions(
@@ -496,6 +504,33 @@ List<String>? _resolveConfiguredModalities(
       .where((item) => item.isNotEmpty)
       .toList();
   return normalized.isEmpty ? null : normalized;
+}
+
+List<ChatCompletionModality>? _ensureAudioRequirements({
+  required String modelType,
+  required String modelId,
+  required bool hasInputAudio,
+  required List<String>? configuredModalities,
+  required List<ChatCompletionModality>? resolvedModalities,
+}) {
+  if (modelType != 'audio' || hasInputAudio) {
+    return resolvedModalities;
+  }
+
+  if (resolvedModalities == null || resolvedModalities.isEmpty) {
+    return const [ChatCompletionModality.text, ChatCompletionModality.audio];
+  }
+
+  if (!resolvedModalities.contains(ChatCompletionModality.audio)) {
+    throw GenkitException(
+      'Model "$modelId" requires audio input or audio output. '
+      'Provide audio input content or include "audio" in responseModalities.'
+      '${configuredModalities == null ? '' : ' Current responseModalities: $configuredModalities.'}',
+      status: StatusCodes.INVALID_ARGUMENT,
+    );
+  }
+
+  return resolvedModalities;
 }
 
 final class _ResolvedClientConfig {

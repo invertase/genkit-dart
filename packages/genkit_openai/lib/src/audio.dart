@@ -104,43 +104,18 @@ bool containsInputAudio(List<Message> messages) {
   return false;
 }
 
-/// Resolves and normalizes OpenAI chat completion modalities.
-///
-/// OpenAI currently accepts only:
-/// - `['text']`
-/// - `['text', 'audio']`
-///
-/// If audio is requested, this function always includes `text`.
+/// Resolves OpenAI chat completion modalities from user-provided values.
 List<ChatCompletionModality>? resolveOpenAIModalities({
   required String modelType,
   required List<String>? configured,
   String? modelId,
   bool hasInputAudio = false,
 }) {
-  final normalizedModelId = modelId?.trim().toLowerCase();
-  final shouldDefaultToAudioOutput =
-      modelType == 'audio' &&
-      !hasInputAudio &&
-      (normalizedModelId == null ||
-          normalizedModelId.isEmpty ||
-          isAudioPreviewModel(normalizedModelId));
-
-  final requested =
-      configured ?? (shouldDefaultToAudioOutput ? ['audio'] : null);
-  if (requested == null || requested.isEmpty) {
+  if (configured == null || configured.isEmpty) {
     return null;
   }
 
-  final parsed = <ChatCompletionModality>{};
-  for (final modality in requested) {
-    parsed.add(_parseOpenAIModality(modality));
-  }
-
-  if (parsed.contains(ChatCompletionModality.audio)) {
-    return [ChatCompletionModality.text, ChatCompletionModality.audio];
-  }
-
-  return [ChatCompletionModality.text];
+  return configured.map(_parseOpenAIModality).toList();
 }
 
 /// Builds audio options for chat completions when audio modality is enabled.
@@ -156,16 +131,8 @@ ChatCompletionAudioOptions? resolveOpenAIAudioOptions(
     return null;
   }
 
-  final resolvedVoice =
-      _nonEmptyString(voice) ??
-      _nonEmptyString(rawConfig?['voice']) ??
-      _nonEmptyString(rawConfig?['audioVoice']) ??
-      'alloy';
-  final resolvedFormat =
-      _nonEmptyString(format) ??
-      _nonEmptyString(rawConfig?['audio_format']) ??
-      _nonEmptyString(rawConfig?['audioFormat']) ??
-      defaultFormat;
+  final resolvedVoice = _nonEmptyString(voice) ?? 'alloy';
+  final resolvedFormat = _nonEmptyString(format) ?? defaultFormat;
 
   return ChatCompletionAudioOptions(
     voice: _parseOpenAIAudioVoice(resolvedVoice),
@@ -199,14 +166,8 @@ ChatCompletionAudioVoice _parseOpenAIAudioVoice(String voice) {
 
 ChatCompletionAudioFormat _parseOpenAIAudioFormat(String format) {
   final normalized = format.trim().toLowerCase();
-  final value = switch (normalized) {
-    'mpeg' => 'mp3',
-    'pcm' || 'l16' => 'pcm16',
-    _ => normalized,
-  };
-
   for (final audioFormat in ChatCompletionAudioFormat.values) {
-    if (audioFormat.name == value) {
+    if (audioFormat.name == normalized) {
       return audioFormat;
     }
   }

@@ -101,10 +101,8 @@ Future<ModelResponse> handleSpeechSynthesis(
     audioVoice: audioVoice,
     audioFormat: audioFormat,
   );
-  final responseFormat = _normalizeSpeechResponseFormat(
-    ttsRequest['response_format'] as String?,
-  );
-  ttsRequest['response_format'] = responseFormat;
+  final responseFormat =
+      _nonEmptyString(ttsRequest['response_format']) ?? 'mp3';
   final requestedMimeType = _speechFormatToMimeType(responseFormat);
   final speechEndpoint = _resolveSpeechEndpoint(baseUrl);
 
@@ -159,52 +157,19 @@ Map<String, dynamic> toSpeechSynthesisRequest(
   String? audioVoice,
   String? audioFormat,
 }) {
-  final config = Map<String, dynamic>.from(request.config ?? const {});
-  final voice =
-      _nonEmptyString(config.remove('voice')) ??
-      _nonEmptyString(audioVoice) ??
-      'alloy';
-  final responseFormat =
-      _nonEmptyString(config.remove('response_format')) ??
-      _nonEmptyString(config.remove('responseFormat')) ??
-      _nonEmptyString(config.remove('audio_format')) ??
-      _nonEmptyString(config.remove('audioFormat')) ??
-      _nonEmptyString(audioFormat);
-  final instructions =
-      _nonEmptyString(config.remove('instructions')) ??
-      _nonEmptyString(config.remove('audioInstructions'));
-  final speed =
-      _numberValue(config.remove('speed')) ??
-      _numberValue(config.remove('audioSpeed'));
-  final streamFormat =
-      _nonEmptyString(config.remove('stream_format')) ??
-      _nonEmptyString(config.remove('streamFormat'));
-
-  config
-    ..remove('temperature')
-    ..remove('maxOutputTokens')
-    ..remove('maxTokens')
-    ..remove('stopSequences')
-    ..remove('stop')
-    ..remove('topK')
-    ..remove('topP')
-    ..remove('version')
-    ..remove('jsonMode')
-    ..remove('visualDetailLevel')
-    ..remove('responseModalities')
-    ..remove('audioVoice')
-    ..remove('audioFormat');
-
   final ttsRequest = <String, dynamic>{
+    ...?request.config,
     'model': modelName,
     'input': _extractSpeechInputText(request.messages),
-    'voice': voice,
-    'response_format': _normalizeSpeechResponseFormat(responseFormat),
-    'instructions': instructions,
-    'speed': speed,
-    'stream_format': streamFormat,
   };
-  ttsRequest.addAll(config);
+
+  ttsRequest['voice'] ??= _nonEmptyString(audioVoice) ?? 'alloy';
+  final format = _nonEmptyString(audioFormat);
+  if (_nonEmptyString(ttsRequest['response_format']) == null &&
+      format != null) {
+    ttsRequest['response_format'] = format;
+  }
+
   ttsRequest.removeWhere((_, value) => value == null);
   return ttsRequest;
 }
@@ -248,15 +213,8 @@ String _extractSpeechInputText(List<Message> messages) {
   );
 }
 
-String _speechFormatToApiValue(String format) {
-  return switch (_normalizeSpeechResponseFormat(format)) {
-    'pcm16' || 'pcm' || 'l16' => 'pcm',
-    final normalized => normalized,
-  };
-}
-
 String _speechFormatToMimeType(String format) {
-  final normalized = _speechFormatToApiValue(format);
+  final normalized = format.trim().toLowerCase();
   return _responseFormatMediaTypes[normalized] ?? 'audio/mpeg';
 }
 
@@ -278,29 +236,10 @@ String _resolveSpeechContentType(
   return _speechFormatToMimeType(normalized);
 }
 
-String _normalizeSpeechResponseFormat(String? value) {
-  final normalized = value?.trim().toLowerCase();
-  if (normalized == null || normalized.isEmpty) {
-    return 'mp3';
-  }
-
-  return switch (normalized) {
-    'mpeg' => 'mp3',
-    'pcm16' || 'pcm' || 'l16' => 'pcm',
-    _ => normalized,
-  };
-}
-
 String? _nonEmptyString(Object? value) {
   if (value is! String) return null;
   final trimmed = value.trim();
   return trimmed.isEmpty ? null : trimmed;
-}
-
-double? _numberValue(Object? value) {
-  if (value is num) return value.toDouble();
-  if (value is String) return double.tryParse(value.trim());
-  return null;
 }
 
 final class _OpenAIOptionsSchemaType extends SchemanticType<OpenAIOptions> {

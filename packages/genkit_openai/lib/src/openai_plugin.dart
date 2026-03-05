@@ -21,6 +21,7 @@ import '../genkit_openai.dart';
 import 'aggregation.dart';
 import 'audio.dart';
 import 'chat.dart';
+import 'stt.dart';
 import 'tts.dart';
 
 /// Returns true when the output config indicates JSON-structured output
@@ -48,6 +49,7 @@ ResponseFormat? buildOpenAIResponseFormat(Map<String, dynamic>? schema) {
 SchemanticType<OpenAIOptions> optionsSchemaForModel(String modelId) {
   return switch (getModelType(modelId)) {
     'audio' => audioModelOptionsSchema(),
+    'stt' => speechToTextModelOptionsSchema(),
     'tts' => speechSynthesisModelOptionsSchema(),
     _ => chatModelOptionsSchema(),
   };
@@ -161,6 +163,10 @@ class OpenAIPlugin extends GenkitPlugin {
 
     if (modelType == 'tts') {
       return ttsModelInfo(modelId);
+    }
+
+    if (modelType == 'stt') {
+      return speechToTextModelInfo(modelId);
     }
 
     // O-series reasoning models (o1, o2, o3, o4, etc.) have different capabilities
@@ -278,6 +284,15 @@ class OpenAIPlugin extends GenkitPlugin {
           final supportsTools = supports?['tools'] == true;
           final resolvedModelId = options.version ?? modelName;
           final resolvedModelType = getModelType(resolvedModelId);
+          if (resolvedModelType == 'stt') {
+            return await handleSpeechToText(
+              client,
+              requestInput,
+              modelId: resolvedModelId,
+              baseUrl: resolvedConfig.baseUrl,
+            );
+          }
+
           if (resolvedModelType == 'tts') {
             return await handleSpeechSynthesis(
               client,

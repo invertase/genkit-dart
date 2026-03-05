@@ -21,6 +21,8 @@ import 'src/openai_plugin.dart';
 
 export 'src/audio.dart' show audioModelInfo, resolveOpenAIModalities;
 export 'src/converters.dart' show GenkitConverter;
+export 'src/stt.dart'
+    show isSpeechToTextModel, speechToTextModelInfo, toSpeechToTextRequest;
 export 'src/tts.dart' show isSpeechSynthesisModel, ttsModelInfo;
 export 'src/utils.dart'
     show

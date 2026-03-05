@@ -103,14 +103,75 @@ abstract final class GenkitConverter {
     }
     if (part.isMedia) {
       final media = (part as MediaPart).media;
-      return ChatCompletionMessageContentPart.image(
-        imageUrl: ChatCompletionMessageImageUrl(
-          url: media.url,
-          detail: _mapVisualDetailLevel(visualDetailLevel),
-        ),
+      final parsedDataUrl = _extractDataFromBase64Url(media.url);
+      final contentType =
+          (media.contentType == null || media.contentType!.trim().isEmpty)
+          ? (parsedDataUrl?['contentType'])
+          : media.contentType;
+
+      if (_isAudioContentType(contentType)) {
+        if (parsedDataUrl == null) {
+          throw GenkitException(
+            'Audio URLs are not supported for chat completions. '
+            'Only base64-encoded audio data URLs are supported.',
+            status: StatusCodes.INVALID_ARGUMENT,
+          );
+        }
+        return ChatCompletionMessageContentPart.audio(
+          inputAudio: ChatCompletionMessageInputAudio(
+            data: parsedDataUrl['data']!,
+            format: _audioInputFormatFromContentType(
+              parsedDataUrl['contentType']!,
+            ),
+          ),
+        );
+      }
+
+      if (contentType == null || _isImageContentType(contentType)) {
+        return ChatCompletionMessageContentPart.image(
+          imageUrl: ChatCompletionMessageImageUrl(
+            url: media.url,
+            detail: _mapVisualDetailLevel(visualDetailLevel),
+          ),
+        );
+      }
+
+      throw GenkitException(
+        'Unsupported media content type "$contentType" for chat completions.',
+        status: StatusCodes.INVALID_ARGUMENT,
       );
     }
     throw UnimplementedError('Unsupported part type: $part');
+  }
+
+  static bool _isImageContentType(String? contentType) {
+    if (contentType == null || contentType.isEmpty) return false;
+    return contentType.startsWith('image/');
+  }
+
+  static bool _isAudioContentType(String? contentType) {
+    if (contentType == null || contentType.isEmpty) return false;
+    return contentType.toLowerCase().startsWith('audio/');
+  }
+
+  static Map<String, String>? _extractDataFromBase64Url(String url) {
+    final match = RegExp(r'^data:([^;]+);base64,(.+)$').firstMatch(url);
+    if (match == null) return null;
+    return <String, String>{
+      'contentType': match.group(1)!,
+      'data': match.group(2)!,
+    };
+  }
+
+  static ChatCompletionMessageInputAudioFormat _audioInputFormatFromContentType(
+    String contentType,
+  ) {
+    final normalized = contentType.toLowerCase().split(';').first.trim();
+    return switch (normalized) {
+      'audio/mp3' || 'audio/mpeg' => ChatCompletionMessageInputAudioFormat.mp3,
+      'audio/wav' || 'audio/x-wav' => ChatCompletionMessageInputAudioFormat.wav,
+      _ => ChatCompletionMessageInputAudioFormat.wav,
+    };
   }
 
   /// Map visual detail level string to enum
@@ -247,9 +308,9 @@ abstract final class GenkitConverter {
       ChatCompletionAudioFormat.wav => 'audio/wav',
       ChatCompletionAudioFormat.flac => 'audio/flac',
       ChatCompletionAudioFormat.opus => 'audio/opus',
-      ChatCompletionAudioFormat.pcm16 => 'audio/pcm',
+      ChatCompletionAudioFormat.pcm16 => 'audio/L16',
       ChatCompletionAudioFormat.mp3 => 'audio/mpeg',
-      null => 'audio/mpeg',
+      null => 'audio/wav',
     };
   }
 }

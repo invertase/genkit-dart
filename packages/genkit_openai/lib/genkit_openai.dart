@@ -18,7 +18,6 @@ import 'package:http/http.dart' as http;
 import 'package:schemantic/schemantic.dart';
 
 import 'src/openai_plugin.dart';
-import 'src/options.dart';
 
 export 'src/audio.dart' show audioModelInfo, resolveOpenAIModalities;
 export 'src/converters.dart' show GenkitConverter;
@@ -84,6 +83,9 @@ abstract class $OpenAIOptions {
       'ballad',
       'coral',
       'echo',
+      'fable',
+      'nova',
+      'onyx',
       'sage',
       'shimmer',
       'verse',

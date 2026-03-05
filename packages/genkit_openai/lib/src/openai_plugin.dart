@@ -20,7 +20,7 @@ import 'package:schemantic/schemantic.dart';
 import '../genkit_openai.dart';
 import 'aggregation.dart';
 import 'audio.dart';
-import 'options.dart';
+import 'chat.dart';
 import 'tts.dart';
 
 /// Returns true when the output config indicates JSON-structured output
@@ -42,6 +42,15 @@ ResponseFormat? buildOpenAIResponseFormat(Map<String, dynamic>? schema) {
       strict: true,
     ),
   );
+}
+
+/// Returns a model-specific custom options schema.
+SchemanticType<OpenAIOptions> optionsSchemaForModel(String modelId) {
+  return switch (getModelType(modelId)) {
+    'audio' => audioModelOptionsSchema(),
+    'tts' => speechSynthesisModelOptionsSchema(),
+    _ => chatModelOptionsSchema(),
+  };
 }
 
 /// Core plugin implementation
@@ -91,6 +100,7 @@ class OpenAIPlugin extends GenkitPlugin {
 
           if (modelType != 'chat' &&
               modelType != 'audio' &&
+              modelType != 'stt' &&
               modelType != 'tts' &&
               modelType != 'unknown') {
             continue;
@@ -152,6 +162,7 @@ class OpenAIPlugin extends GenkitPlugin {
     if (modelType == 'tts') {
       return ttsModelInfo(modelId);
     }
+
     // O-series reasoning models (o1, o2, o3, o4, etc.) have different capabilities
     // Matches: o1, o1-preview, o2, o3-mini, o4-mini-2025-01-01, etc.
     final oSeriesPattern = RegExp(r'^o\d+(?:-|$)');
@@ -209,6 +220,7 @@ class OpenAIPlugin extends GenkitPlugin {
             (modelId) =>
                 getModelType(modelId) == 'chat' ||
                 getModelType(modelId) == 'audio' ||
+                getModelType(modelId) == 'stt' ||
                 getModelType(modelId) == 'tts' ||
                 getModelType(modelId) == 'unknown',
           )
@@ -249,6 +261,7 @@ class OpenAIPlugin extends GenkitPlugin {
       metadata: {'model': modelInfo.toJson()},
       fn: (req, ctx) async {
         final requestInput = req!;
+        final rawConfig = requestInput.config ?? const <String, dynamic>{};
         final options = requestInput.config != null
             ? OpenAIOptions.$schema.parse(requestInput.config!)
             : OpenAIOptions();
@@ -264,27 +277,36 @@ class OpenAIPlugin extends GenkitPlugin {
           final supports = modelInfo.supports;
           final supportsTools = supports?['tools'] == true;
           final resolvedModelId = options.version ?? modelName;
-          if (getModelType(resolvedModelId) == 'tts') {
+          final resolvedModelType = getModelType(resolvedModelId);
+          if (resolvedModelType == 'tts') {
             return await handleSpeechSynthesis(
               client,
               requestInput,
               modelId: resolvedModelId,
-              baseUrl: baseUrl,
+              baseUrl: resolvedConfig.baseUrl,
               audioVoice: options.audioVoice,
               audioFormat: options.audioFormat,
             );
           }
 
-          final modelType = getModelType(resolvedModelId);
+          final modelType = resolvedModelType;
+          final hasInputAudio = containsInputAudio(requestInput.messages);
           final modalities = resolveOpenAIModalities(
             modelType: modelType,
-            configured: options.responseModalities,
+            configured: _resolveConfiguredModalities(
+              options.responseModalities,
+              rawConfig,
+            ),
+            modelId: resolvedModelId,
+            hasInputAudio: hasInputAudio,
           );
 
           final audioOptions = resolveOpenAIAudioOptions(
             modalities,
             voice: options.audioVoice,
             format: options.audioFormat,
+            rawConfig: rawConfig,
+            defaultFormat: 'wav',
           );
 
           final isJsonMode = isJsonStructuredOutput(
@@ -453,6 +475,27 @@ class OpenAIPlugin extends GenkitPlugin {
       raw: response.toJson(),
     );
   }
+}
+
+List<String>? _resolveConfiguredModalities(
+  List<String>? direct,
+  Map<String, dynamic> rawConfig,
+) {
+  if (direct != null && direct.isNotEmpty) {
+    return direct;
+  }
+
+  final legacy = rawConfig['response_modalities'] ?? rawConfig['modalities'];
+  if (legacy is! List) {
+    return null;
+  }
+
+  final normalized = legacy
+      .whereType<String>()
+      .map((item) => item.trim())
+      .where((item) => item.isNotEmpty)
+      .toList();
+  return normalized.isEmpty ? null : normalized;
 }
 
 final class _ResolvedClientConfig {

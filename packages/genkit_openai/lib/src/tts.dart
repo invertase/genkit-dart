@@ -15,15 +15,62 @@
 import 'dart:convert';
 
 import 'package:genkit/plugin.dart';
+import 'package:json_schema_builder/json_schema_builder.dart' as jsb;
 import 'package:openai_dart/openai_dart.dart';
 // ignore: implementation_imports
 import 'package:openai_dart/src/generated/client.dart' as openai_generated;
+import 'package:schemantic/schemantic.dart';
+
+import '../genkit_openai.dart';
+
+const Map<String, String> _responseFormatMediaTypes = <String, String>{
+  'mp3': 'audio/mpeg',
+  'mpeg': 'audio/mpeg',
+  'opus': 'audio/opus',
+  'aac': 'audio/aac',
+  'flac': 'audio/flac',
+  'wav': 'audio/wav',
+  'pcm': 'audio/L16',
+  'pcm16': 'audio/L16',
+  'l16': 'audio/L16',
+};
+
+final SchemanticType<OpenAIOptions> _ttsOptionsSchema =
+    _OpenAIOptionsSchemaType(
+      schemaName: 'OpenAIOptionsTts',
+      properties: {
+        'version': $Schema.string(),
+        'audioVoice': $Schema.string(
+          enumValues: [
+            'alloy',
+            'ash',
+            'ballad',
+            'coral',
+            'echo',
+            'fable',
+            'nova',
+            'onyx',
+            'sage',
+            'shimmer',
+            'verse',
+          ],
+        ),
+        'audioFormat': $Schema.string(
+          enumValues: ['wav', 'mp3', 'flac', 'opus', 'pcm16'],
+        ),
+      },
+    );
+
+/// Returns custom options schema for speech synthesis models.
+SchemanticType<OpenAIOptions> speechSynthesisModelOptionsSchema() =>
+    _ttsOptionsSchema;
 
 /// Model info for text-to-speech models.
 ModelInfo ttsModelInfo(String model) {
   return ModelInfo(
     label: model,
     supports: {
+      'output': ['media'],
       'multiturn': false,
       'tools': false,
       'systemRole': false,
@@ -48,11 +95,17 @@ Future<ModelResponse> handleSpeechSynthesis(
   String? audioVoice,
   String? audioFormat,
 }) async {
-  final textInput = _extractSpeechInputText(requestInput.messages);
-  final voice = audioVoice ?? 'alloy';
-  final format = (audioFormat ?? 'mp3').toLowerCase();
-  final responseFormat = _speechFormatToApiValue(format);
-  final requestedMimeType = _speechFormatToMimeType(format);
+  final ttsRequest = toSpeechSynthesisRequest(
+    modelId,
+    requestInput,
+    audioVoice: audioVoice,
+    audioFormat: audioFormat,
+  );
+  final responseFormat = _normalizeSpeechResponseFormat(
+    ttsRequest['response_format'] as String?,
+  );
+  ttsRequest['response_format'] = responseFormat;
+  final requestedMimeType = _speechFormatToMimeType(responseFormat);
   final speechEndpoint = _resolveSpeechEndpoint(baseUrl);
 
   // ignore: invalid_use_of_protected_member
@@ -62,17 +115,12 @@ Future<ModelResponse> handleSpeechSynthesis(
     method: openai_generated.HttpMethod.post,
     requestType: 'application/json',
     responseType: requestedMimeType,
-    body: {
-      'model': modelId,
-      'input': textInput,
-      'voice': voice,
-      'response_format': responseFormat,
-    },
+    body: ttsRequest,
   );
 
   final mimeType = _resolveSpeechContentType(
     response.headers['content-type'],
-    fallbackFormat: format,
+    fallbackFormat: responseFormat,
   );
   final audioData = base64Encode(response.bodyBytes);
 
@@ -89,7 +137,7 @@ Future<ModelResponse> handleSpeechSynthesis(
           metadata: {
             'audio': {
               'model': modelId,
-              'voice': voice,
+              'voice': ttsRequest['voice'],
               'format': responseFormat,
             },
           },
@@ -99,9 +147,66 @@ Future<ModelResponse> handleSpeechSynthesis(
     raw: {
       'endpoint': speechEndpoint.path,
       'model': modelId,
+      'responseFormat': responseFormat,
       'contentType': mimeType,
     },
   );
+}
+
+Map<String, dynamic> toSpeechSynthesisRequest(
+  String modelName,
+  ModelRequest request, {
+  String? audioVoice,
+  String? audioFormat,
+}) {
+  final config = Map<String, dynamic>.from(request.config ?? const {});
+  final voice =
+      _nonEmptyString(config.remove('voice')) ??
+      _nonEmptyString(audioVoice) ??
+      'alloy';
+  final responseFormat =
+      _nonEmptyString(config.remove('response_format')) ??
+      _nonEmptyString(config.remove('responseFormat')) ??
+      _nonEmptyString(config.remove('audio_format')) ??
+      _nonEmptyString(config.remove('audioFormat')) ??
+      _nonEmptyString(audioFormat);
+  final instructions =
+      _nonEmptyString(config.remove('instructions')) ??
+      _nonEmptyString(config.remove('audioInstructions'));
+  final speed =
+      _numberValue(config.remove('speed')) ??
+      _numberValue(config.remove('audioSpeed'));
+  final streamFormat =
+      _nonEmptyString(config.remove('stream_format')) ??
+      _nonEmptyString(config.remove('streamFormat'));
+
+  config
+    ..remove('temperature')
+    ..remove('maxOutputTokens')
+    ..remove('maxTokens')
+    ..remove('stopSequences')
+    ..remove('stop')
+    ..remove('topK')
+    ..remove('topP')
+    ..remove('version')
+    ..remove('jsonMode')
+    ..remove('visualDetailLevel')
+    ..remove('responseModalities')
+    ..remove('audioVoice')
+    ..remove('audioFormat');
+
+  final ttsRequest = <String, dynamic>{
+    'model': modelName,
+    'input': _extractSpeechInputText(request.messages),
+    'voice': voice,
+    'response_format': _normalizeSpeechResponseFormat(responseFormat),
+    'instructions': instructions,
+    'speed': speed,
+    'stream_format': streamFormat,
+  };
+  ttsRequest.addAll(config);
+  ttsRequest.removeWhere((_, value) => value == null);
+  return ttsRequest;
 }
 
 String _extractSpeechInputText(List<Message> messages) {
@@ -144,28 +249,15 @@ String _extractSpeechInputText(List<Message> messages) {
 }
 
 String _speechFormatToApiValue(String format) {
-  return switch (format) {
-    'wav' || 'mp3' || 'flac' || 'opus' => format,
-    'pcm16' || 'pcm' => 'pcm',
-    _ => throw GenkitException(
-      'Unsupported audio format "$format".',
-      status: StatusCodes.INVALID_ARGUMENT,
-    ),
+  return switch (_normalizeSpeechResponseFormat(format)) {
+    'pcm16' || 'pcm' || 'l16' => 'pcm',
+    final normalized => normalized,
   };
 }
 
 String _speechFormatToMimeType(String format) {
-  return switch (format) {
-    'wav' => 'audio/wav',
-    'mp3' || 'mpeg' => 'audio/mpeg',
-    'flac' => 'audio/flac',
-    'opus' => 'audio/opus',
-    'pcm16' || 'pcm' => 'audio/pcm',
-    _ => throw GenkitException(
-      'Unsupported audio format "$format".',
-      status: StatusCodes.INVALID_ARGUMENT,
-    ),
-  };
+  final normalized = _speechFormatToApiValue(format);
+  return _responseFormatMediaTypes[normalized] ?? 'audio/mpeg';
 }
 
 String _resolveSpeechContentType(
@@ -183,10 +275,50 @@ String _resolveSpeechContentType(
   if (normalized.contains('/')) {
     return _speechFormatToMimeType(fallbackFormat);
   }
+  return _speechFormatToMimeType(normalized);
+}
 
-  try {
-    return _speechFormatToMimeType(normalized);
-  } on GenkitException {
-    return _speechFormatToMimeType(fallbackFormat);
+String _normalizeSpeechResponseFormat(String? value) {
+  final normalized = value?.trim().toLowerCase();
+  if (normalized == null || normalized.isEmpty) {
+    return 'mp3';
   }
+
+  return switch (normalized) {
+    'mpeg' => 'mp3',
+    'pcm16' || 'pcm' || 'l16' => 'pcm',
+    _ => normalized,
+  };
+}
+
+String? _nonEmptyString(Object? value) {
+  if (value is! String) return null;
+  final trimmed = value.trim();
+  return trimmed.isEmpty ? null : trimmed;
+}
+
+double? _numberValue(Object? value) {
+  if (value is num) return value.toDouble();
+  if (value is String) return double.tryParse(value.trim());
+  return null;
+}
+
+final class _OpenAIOptionsSchemaType extends SchemanticType<OpenAIOptions> {
+  final String schemaName;
+  final Map<String, jsb.Schema> properties;
+
+  const _OpenAIOptionsSchemaType({
+    required this.schemaName,
+    required this.properties,
+  });
+
+  @override
+  OpenAIOptions parse(Object? json) => OpenAIOptions.$schema.parse(json);
+
+  @override
+  JsonSchemaMetadata get schemaMetadata => JsonSchemaMetadata(
+    name: schemaName,
+    definition: $Schema.object(properties: properties, required: []).value,
+    dependencies: const [],
+  );
 }

@@ -41,46 +41,18 @@ Flow<String, String, void, void> defineWhisperTranscriptionFlow(
   );
 }
 
-/// Defines a flow that demonstrates generic passthrough config parameters.
-///
-/// This uses documented params (`response_format`, `include`, `language`) and
-/// shows where future params can be passed through as raw config keys.
-Flow<String, String, void, void> defineWhisperPassthroughTranscriptionFlow(
-  Genkit ai, {
-  String model = 'whisper-1',
-}) {
-  return ai.defineFlow(
-    name: 'whisperTranscribeWithPassthrough',
-    inputSchema: .string(
-      defaultValue: 'data:audio/wav;base64,<base64-audio-bytes>',
-    ),
-    outputSchema: .string(),
-    fn: (audioDataUrl, _) => _generateTranscriptFromDataUrl(
-      ai: ai,
-      model: model,
-      audioDataUrl: audioDataUrl,
-      prompt: 'Transcribe this audio. Return only transcript text.',
-      config: <String, dynamic>{
-        'response_format': 'json',
-        'include': ['logprobs'],
-        'language': 'en',
-      },
-    ),
-  );
-}
-
 /// Defines a flow that demonstrates `response_format=json` with logprobs.
-Flow<String, String, void, void> defineWhisperJsonLogprobsFlow(
+Flow<String, Map<String, dynamic>, void, void> defineWhisperJsonLogprobsFlow(
   Genkit ai, {
-  String model = 'whisper-1',
+  String model = 'gpt-4o-transcribe',
 }) {
   return ai.defineFlow(
     name: 'whisperTranscribeJsonLogprobs',
     inputSchema: .string(
       defaultValue: 'data:audio/wav;base64,<base64-audio-bytes>',
     ),
-    outputSchema: .string(),
-    fn: (audioDataUrl, _) => _generateTranscriptFromDataUrl(
+    outputSchema: .map(.string(), .dynamicSchema()),
+    fn: (audioDataUrl, _) => _generateTranscriptionJsonFromDataUrl(
       ai: ai,
       model: model,
       audioDataUrl: audioDataUrl,
@@ -88,24 +60,21 @@ Flow<String, String, void, void> defineWhisperJsonLogprobsFlow(
       config: <String, dynamic>{
         'response_format': 'json',
         'include': ['logprobs'],
-        'language': 'en',
       },
     ),
   );
 }
 
 /// Defines a flow that requests word and segment timestamps.
-Flow<String, String, void, void> defineWhisperVerboseTimestampFlow(
-  Genkit ai, {
-  String model = 'whisper-1',
-}) {
+Flow<String, Map<String, dynamic>, void, void>
+defineWhisperVerboseTimestampFlow(Genkit ai, {String model = 'whisper-1'}) {
   return ai.defineFlow(
     name: 'whisperTranscribeVerboseTimestamps',
     inputSchema: .string(
       defaultValue: 'data:audio/wav;base64,<base64-audio-bytes>',
     ),
-    outputSchema: .string(),
-    fn: (audioDataUrl, _) => _generateTranscriptFromDataUrl(
+    outputSchema: .map(.string(), .dynamicSchema()),
+    fn: (audioDataUrl, _) => _generateTranscriptionJsonFromDataUrl(
       ai: ai,
       model: model,
       audioDataUrl: audioDataUrl,
@@ -113,31 +82,29 @@ Flow<String, String, void, void> defineWhisperVerboseTimestampFlow(
       config: <String, dynamic>{
         'response_format': 'verbose_json',
         'timestampGranularities': ['word', 'segment'],
-        'language': 'en',
       },
     ),
   );
 }
 
 /// Defines a flow that demonstrates diarized output with speaker hints.
-Flow<String, String, void, void> defineWhisperDiarizedFlow(
+Flow<String, Map<String, dynamic>, void, void> defineWhisperDiarizedFlow(
   Genkit ai, {
-  String model = 'whisper-1',
+  String model = 'gpt-4o-transcribe-diarize',
 }) {
   return ai.defineFlow(
     name: 'whisperTranscribeDiarized',
     inputSchema: .string(
       defaultValue: 'data:audio/wav;base64,<base64-audio-bytes>',
     ),
-    outputSchema: .string(),
-    fn: (audioDataUrl, _) => _generateTranscriptFromDataUrl(
+    outputSchema: .map(.string(), .dynamicSchema()),
+    fn: (audioDataUrl, _) => _generateTranscriptionJsonFromDataUrl(
       ai: ai,
       model: model,
       audioDataUrl: audioDataUrl,
       prompt: 'Transcribe this audio and use diarization if available.',
       config: <String, dynamic>{
-        'response_format': 'diarized_json',
-        'chunkingStrategy': 'auto',
+        'response_format': 'json',
         'knownSpeakerNames': ['Speaker A', 'Speaker B'],
       },
     ),
@@ -189,28 +156,6 @@ Flow<String, String, void, void> defineWhisperAudioFileTranscriptionFlow(
   );
 }
 
-/// Defines a flow that transcribes a local video file path (audio track).
-Flow<String, String, void, void> defineWhisperVideoFileTranscriptionFlow(
-  Genkit ai, {
-  String model = 'whisper-1',
-}) {
-  return ai.defineFlow(
-    name: 'whisperTranscribeVideoFile',
-    inputSchema: .string(defaultValue: './sample.mp4'),
-    outputSchema: .string(),
-    fn: (videoPath, _) async {
-      final dataUrl = await _readFileAsDataUrl(videoPath);
-      return _generateTranscriptFromDataUrl(
-        ai: ai,
-        model: model,
-        audioDataUrl: dataUrl,
-        prompt:
-            'Transcribe the audio in this MP4 file. Return only the transcript text.',
-      );
-    },
-  );
-}
-
 void main() {
   final apiKey = Platform.environment['OPENAI_API_KEY'];
   if (apiKey == null || apiKey.isEmpty) {
@@ -219,16 +164,61 @@ void main() {
 
   final ai = Genkit(plugins: [openAI(apiKey: apiKey)]);
   defineWhisperTranscriptionFlow(ai);
-  defineWhisperPassthroughTranscriptionFlow(ai);
   defineWhisperJsonLogprobsFlow(ai);
   defineWhisperVerboseTimestampFlow(ai);
   defineWhisperDiarizedFlow(ai);
   defineWhisperTranslationFlow(ai);
   defineWhisperAudioFileTranscriptionFlow(ai);
-  defineWhisperVideoFileTranscriptionFlow(ai);
 }
 
 Future<String> _generateTranscriptFromDataUrl({
+  required Genkit ai,
+  required String model,
+  required String audioDataUrl,
+  required String prompt,
+  Object? config,
+}) async {
+  final response = await _requestTranscriptionFromDataUrl(
+    ai: ai,
+    model: model,
+    audioDataUrl: audioDataUrl,
+    prompt: prompt,
+    config: config,
+  );
+
+  final text = response.text.trim();
+  if (text.isEmpty) {
+    throw StateError('Model returned empty transcription.');
+  }
+  return text;
+}
+
+Future<Map<String, dynamic>> _generateTranscriptionJsonFromDataUrl({
+  required Genkit ai,
+  required String model,
+  required String audioDataUrl,
+  required String prompt,
+  Object? config,
+}) async {
+  final response = await _requestTranscriptionFromDataUrl(
+    ai: ai,
+    model: model,
+    audioDataUrl: audioDataUrl,
+    prompt: prompt,
+    config: config,
+  );
+
+  final raw = response.raw;
+  if (raw != null) {
+    return raw;
+  }
+
+  throw StateError(
+    'Model returned non-JSON transcription payload for a JSON flow.',
+  );
+}
+
+Future<GenerateResponseHelper> _requestTranscriptionFromDataUrl({
   required Genkit ai,
   required String model,
   required String audioDataUrl,
@@ -242,7 +232,7 @@ Future<String> _generateTranscriptFromDataUrl({
     );
   }
 
-  final response = await ai.generate(
+  return ai.generate(
     model: openAI.transcribe(model),
     messages: [
       Message(
@@ -257,12 +247,6 @@ Future<String> _generateTranscriptFromDataUrl({
     ],
     config: config,
   );
-
-  final text = response.text.trim();
-  if (text.isEmpty) {
-    throw StateError('Model returned empty transcription.');
-  }
-  return text;
 }
 
 Future<String> _readFileAsDataUrl(String path) async {

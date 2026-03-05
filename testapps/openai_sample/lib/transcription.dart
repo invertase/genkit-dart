@@ -105,7 +105,8 @@ Flow<String, Map<String, dynamic>, void, void> defineWhisperDiarizedFlow(
       prompt: 'Transcribe this audio and use diarization if available.',
       config: <String, dynamic>{
         'response_format': 'json',
-        'knownSpeakerNames': ['Speaker A', 'Speaker B'],
+        // Speaker hints require matching knownSpeakerNames and
+        // knownSpeakerReferences list lengths.
       },
     ),
   );

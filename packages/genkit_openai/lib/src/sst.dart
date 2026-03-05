@@ -65,11 +65,19 @@ Future<ModelResponse> handleSpeechToText({
   }
 
   final audioPayload = _decodeAudioDataUrl(media);
-  final useTranslationEndpoint = _shouldUseTranslationEndpoint(
-    modelName: modelName,
+  final translateRequested = _isTranslateRequested(
     configuredTranslate: configuredTranslate,
     rawConfig: rawConfig,
   );
+  final useTranslationEndpoint = _shouldUseTranslationEndpoint(
+    modelName: modelName,
+    translateRequested: translateRequested,
+  );
+  if (translateRequested && !useTranslationEndpoint) {
+    throw GenkitException(
+      'translate=true is only supported for whisper transcription models because OpenAI /audio/translations currently only supports whisper-1.',
+    );
+  }
   final transcriptionUri = buildOpenAIUri(
     useTranslationEndpoint ? '/audio/translations' : '/audio/transcriptions',
     baseUrl,
@@ -228,13 +236,16 @@ Media? _extractAudioMedia(List<Message> messages) {
     );
   }
 
-  final contentType = match.group(1)!.toLowerCase();
+  final parsedContentType = match.group(1)!.toLowerCase();
+  final contentType = _normalizeTranscriptionAudioContentType(
+    parsedContentType,
+  );
   final encodedAudio = url.substring(match.end);
   final bytes = base64Decode(encodedAudio);
   final filename = switch (contentType) {
     'audio/flac' || 'audio/x-flac' => 'audio.flac',
     'audio/mp4' || 'video/mp4' => 'audio.mp4',
-    'audio/mpeg' => 'audio.mpeg',
+    'audio/mpeg' => 'audio.mp3',
     'audio/mpga' || 'audio/x-mpga' => 'audio.mpga',
     'audio/m4a' || 'audio/x-m4a' => 'audio.m4a',
     'audio/ogg' || 'application/ogg' => 'audio.ogg',
@@ -245,6 +256,13 @@ Media? _extractAudioMedia(List<Message> messages) {
   };
 
   return (bytes: bytes, contentType: contentType, filename: filename);
+}
+
+String _normalizeTranscriptionAudioContentType(String contentType) {
+  return switch (contentType) {
+    'audio/mp3' || 'audio/x-mp3' => 'audio/mpeg',
+    _ => contentType,
+  };
 }
 
 List<_MultipartField> _buildTranscriptionFields({
@@ -258,11 +276,12 @@ List<_MultipartField> _buildTranscriptionFields({
   final config = Map<String, dynamic>.from(rawConfig ?? const {});
   final fields = <_MultipartField>[];
   _appendField(fields, 'model', modelName);
+  final isDiarizationModel = _isDiarizationModelName(modelName);
 
   final explicitPrompt = _takeOptionalString(config, ['prompt']);
   final prompt =
       explicitPrompt ?? _extractTranscriptionPrompt(request.messages);
-  if (prompt != null && prompt.isNotEmpty) {
+  if (!isDiarizationModel && prompt != null && prompt.isNotEmpty) {
     _appendField(fields, 'prompt', prompt);
   }
 
@@ -321,7 +340,10 @@ List<_MultipartField> _buildTranscriptionFields({
     outputFormat: request.output?.format,
     outputContentType: request.output?.contentType,
   );
-  _appendField(fields, 'response_format', responseFormat);
+  final apiResponseFormat = _mapTranscriptionResponseFormatForApi(
+    responseFormat,
+  );
+  _appendField(fields, 'response_format', apiResponseFormat);
 
   if (responseFormat == 'diarized_json' && timestampGranularities.isNotEmpty) {
     throw GenkitException(
@@ -329,19 +351,26 @@ List<_MultipartField> _buildTranscriptionFields({
     );
   }
 
-  if (timestampGranularities.isNotEmpty && responseFormat != 'verbose_json') {
+  if (timestampGranularities.isNotEmpty &&
+      apiResponseFormat != 'verbose_json') {
     throw GenkitException(
       'timestamp_granularities requires response_format verbose_json.',
     );
   }
 
-  if (include.isNotEmpty && responseFormat != 'json') {
+  if (include.isNotEmpty && apiResponseFormat != 'json') {
     throw GenkitException('include requires response_format json.');
   }
   for (final includeValue in include) {
     if (!_transcriptionIncludeValues.contains(includeValue)) {
       throw GenkitException('Unsupported include value: $includeValue');
     }
+  }
+  if ((knownSpeakerNames.isNotEmpty || knownSpeakerReferences.isNotEmpty) &&
+      knownSpeakerNames.length != knownSpeakerReferences.length) {
+    throw GenkitException(
+      'known_speaker_names and known_speaker_references must have the same number of items.',
+    );
   }
 
   if (language != null) {
@@ -458,18 +487,25 @@ String _resolveTranscriptionResponseFormat({
   return 'text';
 }
 
+String _mapTranscriptionResponseFormatForApi(String responseFormat) {
+  if (responseFormat == 'diarized_json') {
+    return 'verbose_json';
+  }
+  return responseFormat;
+}
+
 bool _shouldUseTranslationEndpoint({
   required String modelName,
+  required bool translateRequested,
+}) {
+  return translateRequested && _isWhisperModelName(modelName);
+}
+
+bool _isTranslateRequested({
   required bool? configuredTranslate,
   required Map<String, dynamic>? rawConfig,
 }) {
-  if (!_isWhisperModelName(modelName)) {
-    return false;
-  }
-
-  if (configuredTranslate == true) {
-    return true;
-  }
+  if (configuredTranslate == true) return true;
 
   final rawTranslate = rawConfig?['translate'];
   if (rawTranslate is bool) {
@@ -483,6 +519,10 @@ bool _shouldUseTranslationEndpoint({
 
 bool _isWhisperModelName(String modelName) {
   return modelName.toLowerCase().contains('whisper');
+}
+
+bool _isDiarizationModelName(String modelName) {
+  return modelName.toLowerCase().contains('diariz');
 }
 
 void _appendField(List<_MultipartField> fields, String name, String value) {

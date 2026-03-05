@@ -25,8 +25,10 @@ abstract class $OpenAITranscriptionOptions {
   @DoubleField(minimum: 0.0, maximum: 1.0)
   double? get temperature;
 
-  /// Transcription response format
-  /// ('json', 'text', 'srt', 'verbose_json', 'vtt', 'diarized_json')
+  /// Transcription response format.
+  ///
+  /// `diarized_json` is accepted as a compatibility alias and sent to the
+  /// OpenAI API as `verbose_json`.
   @StringField(
     enumValues: ['json', 'text', 'srt', 'verbose_json', 'vtt', 'diarized_json'],
   )

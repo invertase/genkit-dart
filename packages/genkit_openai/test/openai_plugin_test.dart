@@ -274,6 +274,201 @@ void main() {
       expect(fields['response_format'], ['srt']);
     });
 
+    test('uploads audio/mpeg as mp3 file metadata', () async {
+      final capturedBody = Completer<String>();
+      final capturedBoundary = Completer<String>();
+      final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      final subscription = server.listen((request) async {
+        final boundary = request.headers.contentType?.parameters['boundary'];
+        final body = await utf8.decoder.bind(request).join();
+
+        if (boundary != null && !capturedBoundary.isCompleted) {
+          capturedBoundary.complete(boundary);
+        }
+        if (!capturedBody.isCompleted) {
+          capturedBody.complete(body);
+        }
+
+        request.response.statusCode = 200;
+        request.response.headers.contentType = ContentType.json;
+        request.response.write('{"text":"transcribed"}');
+        await request.response.close();
+      });
+
+      addTearDown(() async {
+        await subscription.cancel();
+        await server.close(force: true);
+      });
+
+      final ai = Genkit(
+        plugins: [
+          openAI(
+            apiKey: 'test-key',
+            baseUrl: 'http://127.0.0.1:${server.port}/v1',
+          ),
+        ],
+      );
+
+      final response = await ai.generate(
+        model: openAI.transcribe('gpt-4o-transcribe'),
+        messages: [
+          Message(
+            role: Role.user,
+            content: [
+              MediaPart(
+                media: Media(
+                  url: 'data:audio/mpeg;base64,UklGRg==',
+                  contentType: 'audio/mpeg',
+                ),
+              ),
+            ],
+          ),
+        ],
+      );
+
+      expect(response.text, 'transcribed');
+      final body = await capturedBody.future.timeout(
+        const Duration(seconds: 2),
+      );
+      final boundary = await capturedBoundary.future.timeout(
+        const Duration(seconds: 2),
+      );
+      final fileHeaders = _extractMultipartFileHeaders(body, boundary);
+
+      expect(fileHeaders, contains('filename="audio.mp3"'));
+      expect(fileHeaders, contains('Content-Type: audio/mpeg'));
+    });
+
+    test(
+      'maps diarized_json response_format to verbose_json for API',
+      () async {
+        final capturedFields = Completer<Map<String, List<String>>>();
+        final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+        final subscription = server.listen((request) async {
+          final boundary = request.headers.contentType?.parameters['boundary'];
+          final body = await utf8.decoder.bind(request).join();
+
+          if (boundary != null && !capturedFields.isCompleted) {
+            capturedFields.complete(_parseMultipartFields(body, boundary));
+          }
+
+          request.response.statusCode = 200;
+          request.response.headers.contentType = ContentType.json;
+          request.response.write('{"text":"transcribed"}');
+          await request.response.close();
+        });
+
+        addTearDown(() async {
+          await subscription.cancel();
+          await server.close(force: true);
+        });
+
+        final ai = Genkit(
+          plugins: [
+            openAI(
+              apiKey: 'test-key',
+              baseUrl: 'http://127.0.0.1:${server.port}/v1',
+            ),
+          ],
+        );
+
+        final response = await ai.generate(
+          model: openAI.transcribe('whisper-1'),
+          messages: [
+            Message(
+              role: Role.user,
+              content: [
+                MediaPart(
+                  media: Media(
+                    url: 'data:audio/wav;base64,UklGRg==',
+                    contentType: 'audio/wav',
+                  ),
+                ),
+              ],
+            ),
+          ],
+          config: {
+            'response_format': 'diarized_json',
+            'knownSpeakerNames': ['Speaker A', 'Speaker B'],
+            'knownSpeakerReferences': [
+              'data:audio/wav;base64,QUJD',
+              'data:audio/wav;base64,REVG',
+            ],
+          },
+        );
+
+        expect(response.text, 'transcribed');
+        final fields = await capturedFields.future.timeout(
+          const Duration(seconds: 2),
+        );
+        expect(fields['response_format'], ['verbose_json']);
+        expect(fields['known_speaker_names[]'], ['Speaker A', 'Speaker B']);
+        expect(fields['known_speaker_references[]'], [
+          'data:audio/wav;base64,QUJD',
+          'data:audio/wav;base64,REVG',
+        ]);
+      },
+    );
+
+    test('omits prompt field for diarization models', () async {
+      final capturedFields = Completer<Map<String, List<String>>>();
+      final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      final subscription = server.listen((request) async {
+        final boundary = request.headers.contentType?.parameters['boundary'];
+        final body = await utf8.decoder.bind(request).join();
+
+        if (boundary != null && !capturedFields.isCompleted) {
+          capturedFields.complete(_parseMultipartFields(body, boundary));
+        }
+
+        request.response.statusCode = 200;
+        request.response.headers.contentType = ContentType.json;
+        request.response.write('{"text":"transcribed"}');
+        await request.response.close();
+      });
+
+      addTearDown(() async {
+        await subscription.cancel();
+        await server.close(force: true);
+      });
+
+      final ai = Genkit(
+        plugins: [
+          openAI(
+            apiKey: 'test-key',
+            baseUrl: 'http://127.0.0.1:${server.port}/v1',
+          ),
+        ],
+      );
+
+      final response = await ai.generate(
+        model: openAI.transcribe('gpt-4o-transcribe-diarize'),
+        messages: [
+          Message(
+            role: Role.user,
+            content: [
+              TextPart(text: 'message prompt'),
+              MediaPart(
+                media: Media(
+                  url: 'data:audio/wav;base64,UklGRg==',
+                  contentType: 'audio/wav',
+                ),
+              ),
+            ],
+          ),
+        ],
+        config: {'prompt': 'config prompt', 'response_format': 'json'},
+      );
+
+      expect(response.text, 'transcribed');
+      final fields = await capturedFields.future.timeout(
+        const Duration(seconds: 2),
+      );
+      expect(fields.containsKey('prompt'), isFalse);
+      expect(fields['model'], ['gpt-4o-transcribe-diarize']);
+      expect(fields['response_format'], ['json']);
+    });
+
     test('maps documented multipart transcription params', () async {
       final capturedFields = Completer<Map<String, List<String>>>();
       final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
@@ -461,6 +656,65 @@ void main() {
       );
     });
 
+    test('rejects mismatched known speaker hints', () async {
+      var requestCount = 0;
+      final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      final subscription = server.listen((request) async {
+        requestCount += 1;
+        await utf8.decoder.bind(request).join();
+        request.response.statusCode = 200;
+        request.response.headers.contentType = ContentType.json;
+        request.response.write('{"text":"transcribed"}');
+        await request.response.close();
+      });
+
+      addTearDown(() async {
+        await subscription.cancel();
+        await server.close(force: true);
+      });
+
+      final ai = Genkit(
+        plugins: [
+          openAI(
+            apiKey: 'test-key',
+            baseUrl: 'http://127.0.0.1:${server.port}/v1',
+          ),
+        ],
+      );
+
+      await expectLater(
+        () => ai.generate(
+          model: openAI.transcribe('gpt-4o-transcribe-diarize-mismatch'),
+          messages: [
+            Message(
+              role: Role.user,
+              content: [
+                MediaPart(
+                  media: Media(
+                    url: 'data:audio/wav;base64,UklGRg==',
+                    contentType: 'audio/wav',
+                  ),
+                ),
+              ],
+            ),
+          ],
+          config: {
+            'response_format': 'json',
+            'knownSpeakerNames': ['Speaker A', 'Speaker B'],
+            'knownSpeakerReferences': ['data:audio/wav;base64,QUJD'],
+          },
+        ),
+        throwsA(
+          isA<GenkitException>().having(
+            (e) => e.message,
+            'message',
+            contains('same number of items'),
+          ),
+        ),
+      );
+      expect(requestCount, 0);
+    });
+
     test('parses text/plain transcription responses', () async {
       final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
       final subscription = server.listen((request) async {
@@ -564,6 +818,44 @@ void main() {
           const Duration(seconds: 2),
         );
         expect(fields.containsKey('stream'), isFalse);
+      },
+    );
+
+    test(
+      'rejects translate requests for non-whisper transcription models',
+      () async {
+        final ai = Genkit(
+          plugins: [
+            openAI(apiKey: 'test-key', baseUrl: 'http://127.0.0.1:1/v1'),
+          ],
+        );
+
+        expect(
+          () => ai.generate(
+            model: openAI.transcribe('gpt-4o-transcribe'),
+            messages: [
+              Message(
+                role: Role.user,
+                content: [
+                  MediaPart(
+                    media: Media(
+                      url: 'data:audio/wav;base64,UklGRg==',
+                      contentType: 'audio/wav',
+                    ),
+                  ),
+                ],
+              ),
+            ],
+            config: OpenAITranscriptionOptions(translate: true),
+          ),
+          throwsA(
+            isA<GenkitException>().having(
+              (e) => e.message,
+              'message',
+              contains('only supported for whisper'),
+            ),
+          ),
+        );
       },
     );
   });
@@ -928,4 +1220,20 @@ Map<String, List<String>> _parseMultipartFields(String body, String boundary) {
   }
 
   return fields;
+}
+
+String _extractMultipartFileHeaders(String body, String boundary) {
+  final parts = body.split('--$boundary');
+  for (final rawPart in parts) {
+    if (rawPart.trim().isEmpty || rawPart.trim() == '--') continue;
+    final part = rawPart.trimLeft();
+    final sections = part.split('\r\n\r\n');
+    if (sections.length < 2) continue;
+
+    final headers = sections.first;
+    if (headers.contains('filename=')) {
+      return headers;
+    }
+  }
+  return '';
 }

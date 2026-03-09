@@ -16,7 +16,9 @@ import 'package:genkit/plugin.dart';
 import 'package:openai_dart/openai_dart.dart' as sdk;
 
 import '../genkit_openai.dart';
-import 'chat.dart' as chat;
+import 'chat.dart' as chat_lib;
+import 'stt.dart' as stt_lib;
+import 'utils.dart';
 
 /// Core plugin implementation
 class OpenAIPlugin extends GenkitPlugin {
@@ -56,12 +58,14 @@ class OpenAIPlugin extends GenkitPlugin {
         for (final modelId in availableModelIds) {
           final modelType = getModelType(modelId);
 
-          if (modelType != 'chat' && modelType != 'unknown') {
-            continue;
+          if (modelType == 'chat' || modelType == 'unknown') {
+            final info = modelInfoFor(modelId);
+            actions.add(_createModel(modelId, info));
+          } else if (modelType == 'audio') {
+            if (_isSttModelId(modelId)) {
+              actions.add(_createSttModel(modelId));
+            }
           }
-
-          final info = modelInfoFor(modelId);
-          actions.add(_createModel(modelId, info));
         }
       } catch (e) {
         throw GenkitException(
@@ -83,13 +87,7 @@ class OpenAIPlugin extends GenkitPlugin {
   Future<List<String>> _fetchAvailableModels() async {
     final resolvedConfig = await _resolveClientConfig();
 
-    final client = sdk.OpenAIClient(
-      config: sdk.OpenAIConfig(
-        authProvider: sdk.ApiKeyProvider(resolvedConfig.apiKey),
-        baseUrl: resolvedConfig.baseUrl ?? 'https://api.openai.com/v1',
-        defaultHeaders: resolvedConfig.headers ?? const {},
-      ),
-    );
+    final client = buildOpenAIClient(resolvedConfig);
 
     try {
       final response = await client.models.list();
@@ -106,7 +104,7 @@ class OpenAIPlugin extends GenkitPlugin {
     }
   }
 
-  Future<_ResolvedClientConfig> _resolveClientConfig() async {
+  Future<OpenAIClientConfig> _resolveClientConfig() async {
     final configuredApiKey = await _resolveApiKey();
     if (configuredApiKey == null || configuredApiKey.trim().isEmpty) {
       throw GenkitException(
@@ -115,7 +113,7 @@ class OpenAIPlugin extends GenkitPlugin {
       );
     }
 
-    return _ResolvedClientConfig(
+    return OpenAIClientConfig(
       apiKey: configuredApiKey.trim(),
       baseUrl: baseUrl,
       headers: headers,
@@ -135,25 +133,32 @@ class OpenAIPlugin extends GenkitPlugin {
   list() async {
     try {
       final modelIds = await _fetchAvailableModels();
-      final modelMetadataList =
+      final metadataList =
           <ActionMetadata<dynamic, dynamic, dynamic, dynamic>>[];
 
       for (final modelId in modelIds) {
         final modelType = getModelType(modelId);
-        if (modelType != 'chat' && modelType != 'unknown') {
-          continue;
-        }
 
-        modelMetadataList.add(
-          modelMetadata(
-            'openai/$modelId',
-            modelInfo: modelInfoFor(modelId),
-            customOptions: chat.chatModelOptionsSchema(),
-          ),
-        );
+        if (modelType == 'chat' || modelType == 'unknown') {
+          metadataList.add(
+            modelMetadata(
+              'openai/$modelId',
+              modelInfo: modelInfoFor(modelId),
+              customOptions: chat_lib.chatModelOptionsSchema(),
+            ),
+          );
+        } else if (modelType == 'audio' && _isSttModelId(modelId)) {
+          metadataList.add(
+            modelMetadata(
+              'openai/$modelId',
+              modelInfo: stt_lib.sttModelInfo,
+              customOptions: stt_lib.sttModelOptionsSchema(),
+            ),
+          );
+        }
       }
 
-      return modelMetadataList;
+      return metadataList;
     } catch (e, stackTrace) {
       throw GenkitException(
         'Error listing models from OpenAI: $e',
@@ -165,10 +170,81 @@ class OpenAIPlugin extends GenkitPlugin {
 
   @override
   Action? resolve(String actionType, String name) {
-    if (actionType == 'model') {
-      return _createModel(name, null);
-    }
-    return null;
+    if (actionType != 'model') return null;
+    if (_isSttModelId(name)) return _createSttModel(name);
+    return _createModel(name, null);
+  }
+
+  static bool _isSttModelId(String modelId) {
+    final id = modelId.toLowerCase();
+    return id.contains('whisper') || id.contains('transcribe');
+  }
+
+  /// Creates a Genkit [Model] that calls the OpenAI speech-to-text API.
+  ///
+  /// Whisper models support an additional `translate: true` option that routes
+  /// the request through the translation endpoint instead of transcriptions.
+  Model<stt_lib.OpenAISttOptions> _createSttModel(String modelName) {
+    return Model<stt_lib.OpenAISttOptions>(
+      name: 'openai/$modelName',
+      customOptions: stt_lib.sttModelOptionsSchema(),
+      metadata: {'model': stt_lib.sttModelInfo.toJson()},
+      fn: (req, ctx) async {
+        final modelRequest = req!;
+        final options = stt_lib.parseSttModelOptions(modelRequest.config);
+
+        final resolvedConfig = await _resolveClientConfig();
+        final client = buildOpenAIClient(resolvedConfig);
+
+        try {
+          final shouldTranslate =
+              options.translate == true && modelName.contains('whisper');
+
+          if (shouldTranslate) {
+            final translationReq = stt_lib.buildTranslationRequest(
+              modelId: modelName,
+              request: modelRequest,
+              options: options,
+            );
+            final response = await client.audio.translations.create(
+              translationReq,
+            );
+            return stt_lib.transcriptionToModelResponse(
+              response.text,
+              raw: response.toJson(),
+            );
+          }
+
+          final transcriptionReq = stt_lib.buildTranscriptionRequest(
+            modelId: modelName,
+            request: modelRequest,
+            options: options,
+          );
+
+          if (options.responseFormat == 'verbose_json') {
+            final response = await client.audio.transcriptions.createVerbose(
+              transcriptionReq,
+            );
+            return stt_lib.transcriptionToModelResponse(
+              response.text,
+              raw: response.toJson(),
+            );
+          }
+
+          final response = await client.audio.transcriptions.create(
+            transcriptionReq,
+          );
+          return stt_lib.transcriptionToModelResponse(
+            response.text,
+            raw: response.toJson(),
+          );
+        } catch (e, stackTrace) {
+          rethrowAsGenkitException(e, stackTrace, 'STT');
+        } finally {
+          client.close();
+        }
+      },
+    );
   }
 
   Model _createModel(String modelName, ModelInfo? info) {
@@ -176,30 +252,24 @@ class OpenAIPlugin extends GenkitPlugin {
 
     return Model(
       name: 'openai/$modelName',
-      customOptions: chat.chatModelOptionsSchema(),
+      customOptions: chat_lib.chatModelOptionsSchema(),
       metadata: {'model': modelInfo.toJson()},
       fn: (req, ctx) async {
         final modelRequest = req!;
-        final options = chat.parseChatModelOptions(modelRequest.config);
+        final options = chat_lib.parseChatModelOptions(modelRequest.config);
 
         final resolvedConfig = await _resolveClientConfig();
-        final client = sdk.OpenAIClient(
-          config: sdk.OpenAIConfig(
-            authProvider: sdk.ApiKeyProvider(resolvedConfig.apiKey),
-            baseUrl: resolvedConfig.baseUrl ?? 'https://api.openai.com/v1',
-            defaultHeaders: resolvedConfig.headers ?? const {},
-          ),
-        );
+        final client = buildOpenAIClient(resolvedConfig);
 
         try {
           final supports = modelInfo.supports;
           final supportsTools = supports?['tools'] == true;
 
-          final isJsonMode = chat.isJsonStructuredOutput(
+          final isJsonMode = chat_lib.isJsonStructuredOutput(
             modelRequest.output?.format,
             modelRequest.output?.contentType,
           );
-          final responseFormat = chat.buildOpenAIResponseFormat(
+          final responseFormat = chat_lib.buildOpenAIResponseFormat(
             modelRequest.output?.schema,
           );
           final request = sdk.ChatCompletionCreateRequest(
@@ -227,25 +297,7 @@ class OpenAIPlugin extends GenkitPlugin {
             return await _handleNonStreaming(client, request);
           }
         } catch (e, stackTrace) {
-          if (e is GenkitException) {
-            rethrow;
-          }
-
-          StatusCodes? status;
-          String? details;
-
-          if (e is sdk.ApiException) {
-            status = StatusCodes.fromHttpStatus(e.statusCode);
-            details = e.body?.toString();
-          }
-
-          throw GenkitException(
-            'OpenAI API error: $e',
-            status: status,
-            details: details ?? e.toString(),
-            underlyingException: e,
-            stackTrace: stackTrace,
-          );
+          rethrowAsGenkitException(e, stackTrace, 'Chat');
         } finally {
           client.close();
         }
@@ -328,16 +380,4 @@ class OpenAIPlugin extends GenkitPlugin {
       raw: response.toJson(),
     );
   }
-}
-
-final class _ResolvedClientConfig {
-  final String apiKey;
-  final String? baseUrl;
-  final Map<String, String>? headers;
-
-  const _ResolvedClientConfig({
-    required this.apiKey,
-    required this.baseUrl,
-    required this.headers,
-  });
 }

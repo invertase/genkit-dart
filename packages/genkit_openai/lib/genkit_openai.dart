@@ -16,11 +16,23 @@ import 'dart:async';
 
 import 'package:genkit/plugin.dart';
 
-import 'src/chat.dart' as chat;
+import 'src/chat.dart' as chat_lib;
 import 'src/openai_plugin.dart';
+import 'src/stt.dart' as stt_lib;
 
 export 'src/chat.dart' show OpenAIChatOptions, OpenAIOptions;
 export 'src/converters.dart' show GenkitConverter;
+export 'src/stt.dart'
+    show
+        OpenAISttOptions,
+        buildTranscriptionRequest,
+        buildTranslationRequest,
+        parseSttModelOptions,
+        sttModelInfo,
+        sttModelOptionsSchema,
+        transcriptionModelIds,
+        transcriptionToModelResponse,
+        whisperModelIds;
 export 'src/utils.dart'
     show
         defaultModelInfo,
@@ -65,11 +77,26 @@ class OpenAICompatPluginHandle {
     );
   }
 
-  /// Reference to a model
-  ModelRef<chat.OpenAIChatOptions> model(String name) {
+  /// Reference to a chat model.
+  ModelRef<chat_lib.OpenAIChatOptions> model(String name) {
     return modelRef(
       'openai/$name',
-      customOptions: chat.chatModelOptionsSchema(),
+      customOptions: chat_lib.chatModelOptionsSchema(),
+    );
+  }
+
+  /// Reference to a speech-to-text model.
+  ///
+  /// Works with both Whisper models (e.g. `'whisper-1'`) and GPT transcription
+  /// models (e.g. `'gpt-4o-transcribe'`, `'gpt-4o-mini-transcribe'`).
+  ModelRef<stt_lib.OpenAISttOptions> stt(
+    String name, {
+    stt_lib.OpenAISttOptions? config,
+  }) {
+    return modelRef(
+      'openai/$name',
+      customOptions: stt_lib.sttModelOptionsSchema(),
+      config: config,
     );
   }
 }

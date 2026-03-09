@@ -13,6 +13,7 @@
 // limitations under the License.
 
 import 'package:genkit/genkit.dart';
+import 'package:openai_dart/openai_dart.dart' as sdk;
 
 final RegExp _oSeriesPattern = RegExp(r'^o\d+(?:-|$)');
 final RegExp _gptPattern = RegExp(r'^gpt-\d+(\.\d+)?o?(?:-|$)');
@@ -263,4 +264,54 @@ String getModelType(String modelId) {
 
   // Unknown model type.
   return 'unknown';
+}
+
+/// Resolved OpenAI client config used to construct SDK clients consistently.
+final class OpenAIClientConfig {
+  final String apiKey;
+  final String? baseUrl;
+  final Map<String, String>? headers;
+
+  const OpenAIClientConfig({
+    required this.apiKey,
+    required this.baseUrl,
+    required this.headers,
+  });
+}
+
+/// Builds an OpenAI SDK client from a resolved [OpenAIClientConfig].
+sdk.OpenAIClient buildOpenAIClient(OpenAIClientConfig config) {
+  return sdk.OpenAIClient(
+    config: sdk.OpenAIConfig(
+      authProvider: sdk.ApiKeyProvider(config.apiKey),
+      baseUrl: config.baseUrl ?? 'https://api.openai.com/v1',
+      defaultHeaders: config.headers ?? const {},
+    ),
+  );
+}
+
+/// Re-throws unknown SDK errors as a normalized [GenkitException].
+Never rethrowAsGenkitException(
+  Object error,
+  StackTrace stackTrace,
+  String surface,
+) {
+  if (error is GenkitException) {
+    throw error;
+  }
+
+  StatusCodes? status;
+  String? details;
+  if (error is sdk.ApiException) {
+    status = StatusCodes.fromHttpStatus(error.statusCode);
+    details = error.body?.toString();
+  }
+
+  throw GenkitException(
+    'OpenAI $surface API error: $error',
+    status: status,
+    details: details ?? error.toString(),
+    underlyingException: error,
+    stackTrace: stackTrace,
+  );
 }

@@ -12,7 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-import 'package:genkit/genkit.dart';
+import 'package:genkit/plugin.dart';
+import 'package:openai_dart/openai_dart.dart' as sdk;
 
 final RegExp _oSeriesPattern = RegExp(r'^o\d+(?:-|$)');
 final RegExp _gptPattern = RegExp(r'^gpt-\d+(\.\d+)?o?(?:-|$)');
@@ -216,7 +217,7 @@ String getModelType(String modelId) {
     return 'code';
   }
 
-  // Audio models (TTS, transcription, realtime, speech-to-text).
+  // Audio models (TTS, transcription, realtime, speech-to-text, chat audio).
   if (id.contains('tts') ||
       id.contains('audio') ||
       id.contains('realtime') ||
@@ -263,4 +264,57 @@ String getModelType(String modelId) {
 
   // Unknown model type.
   return 'unknown';
+}
+
+/// Holds the resolved credentials and endpoint configuration for an OpenAI
+/// (or compatible) API request.
+final class OpenAIClientConfig {
+  final String apiKey;
+  final String? baseUrl;
+  final Map<String, String>? headers;
+
+  const OpenAIClientConfig({
+    required this.apiKey,
+    this.baseUrl,
+    this.headers,
+  });
+}
+
+/// Builds an [sdk.OpenAIClient] from an [OpenAIClientConfig].
+sdk.OpenAIClient buildOpenAIClient(OpenAIClientConfig config) {
+  return sdk.OpenAIClient(
+    config: sdk.OpenAIConfig(
+      authProvider: sdk.ApiKeyProvider(config.apiKey),
+      baseUrl: config.baseUrl ?? 'https://api.openai.com/v1',
+      defaultHeaders: config.headers ?? const {},
+    ),
+  );
+}
+
+/// Rethrows [e] wrapped in a [GenkitException].
+///
+/// API errors are mapped to their corresponding [StatusCodes]; all other
+/// errors are wrapped with a generic status. [modelType] is used as a prefix
+/// in the error message (e.g. `'chat'`, `'audio'`).
+Never rethrowAsGenkitException(
+  Object e,
+  StackTrace stackTrace,
+  String modelType,
+) {
+  if (e is GenkitException) throw e;
+
+  StatusCodes? status;
+  String? details;
+  if (e is sdk.ApiException) {
+    status = StatusCodes.fromHttpStatus(e.statusCode);
+    details = e.body?.toString();
+  }
+
+  throw GenkitException(
+    'OpenAI $modelType API error: $e',
+    status: status,
+    details: details ?? e.toString(),
+    underlyingException: e,
+    stackTrace: stackTrace,
+  );
 }

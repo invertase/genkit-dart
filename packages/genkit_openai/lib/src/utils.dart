@@ -13,6 +13,8 @@
 // limitations under the License.
 
 import 'package:genkit/genkit.dart';
+import 'package:genkit/plugin.dart';
+import 'package:openai_dart/openai_dart.dart' as sdk;
 
 final RegExp _oSeriesPattern = RegExp(r'^o\d+(?:-|$)');
 final RegExp _gptPattern = RegExp(r'^gpt-\d+(\.\d+)?o?(?:-|$)');
@@ -263,4 +265,55 @@ String getModelType(String modelId) {
 
   // Unknown model type.
   return 'unknown';
+}
+
+final class OpenAIClientConfig {
+  final String apiKey;
+  final String? baseUrl;
+  final Map<String, String>? headers;
+
+  const OpenAIClientConfig({
+    required this.apiKey,
+    required this.baseUrl,
+    required this.headers,
+  });
+}
+
+sdk.OpenAIClient buildOpenAIClient(OpenAIClientConfig config) {
+  return sdk.OpenAIClient(
+    config: sdk.OpenAIConfig(
+      authProvider: sdk.ApiKeyProvider(config.apiKey),
+      baseUrl: config.baseUrl ?? 'https://api.openai.com/v1',
+      defaultHeaders: config.headers ?? const {},
+    ),
+  );
+}
+
+/// Converts any caught exception into a [GenkitException], re-throwing
+/// [GenkitException]s unchanged.
+Never rethrowAsGenkitException(
+  Object e,
+  StackTrace stackTrace,
+  String operation,
+) {
+  if (e is GenkitException) Error.throwWithStackTrace(e, stackTrace);
+
+  StatusCodes? status;
+  String? details;
+
+  if (e is sdk.ApiException) {
+    status = StatusCodes.fromHttpStatus(e.statusCode);
+    details = e.body?.toString();
+  }
+
+  Error.throwWithStackTrace(
+    GenkitException(
+      'OpenAI $operation error: $e',
+      status: status,
+      details: details ?? e.toString(),
+      underlyingException: e,
+      stackTrace: stackTrace,
+    ),
+    stackTrace,
+  );
 }

@@ -16,11 +16,21 @@ import 'dart:async';
 
 import 'package:genkit/plugin.dart';
 
-import 'src/chat.dart' as chat;
+import 'src/chat.dart' as chat_lib;
 import 'src/openai_plugin.dart';
+import 'src/tts.dart' as tts_lib;
 
 export 'src/chat.dart' show OpenAIChatOptions, OpenAIOptions;
 export 'src/converters.dart' show GenkitConverter;
+export 'src/tts.dart'
+    show
+        OpenAITtsOptions,
+        audioMimeTypes,
+        parseTtsOptions,
+        supportedTtsModels,
+        ttsModelInfo,
+        ttsModelRef,
+        ttsOptionsSchema;
 export 'src/utils.dart'
     show
         defaultModelInfo,
@@ -65,11 +75,21 @@ class OpenAICompatPluginHandle {
     );
   }
 
-  /// Reference to a model
-  ModelRef<chat.OpenAIChatOptions> model(String name) {
+  /// Reference to a chat model.
+  ///
+  /// Use [name] to select a supported model such as `gpt-4o`, `gpt-4o-mini`,
+  /// or `o3-mini`.
+  ModelRef<chat_lib.OpenAIChatOptions> model(String name) {
     return modelRef(
       'openai/$name',
-      customOptions: chat.chatModelOptionsSchema(),
+      customOptions: chat_lib.chatModelOptionsSchema(),
     );
   }
+
+  /// Reference to a TTS (text-to-speech) model.
+  ///
+  /// Use [name] to select a supported model such as `tts-1`, `tts-1-hd`,
+  /// or `gpt-4o-mini-tts`.
+  ModelRef<tts_lib.OpenAITtsOptions> speech(String name) =>
+      tts_lib.ttsModelRef(name);
 }

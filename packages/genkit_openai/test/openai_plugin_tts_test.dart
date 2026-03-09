@@ -141,7 +141,6 @@ void main() {
       final ref = openAI.speech('tts-1-hd');
       expect(ref.customOptions, same(OpenAITtsOptions.$schema));
     });
-
   });
 
   group('parseSpeechVoice', () {
@@ -187,7 +186,10 @@ void main() {
     });
 
     test('defaults to mp3 for an unrecognised format', () {
-      expect(tts.parseSpeechResponseFormat('xyz'), sdk.SpeechResponseFormat.mp3);
+      expect(
+        tts.parseSpeechResponseFormat('xyz'),
+        sdk.SpeechResponseFormat.mp3,
+      );
     });
   });
 

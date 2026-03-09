@@ -35,7 +35,9 @@ abstract class $OpenAITtsOptions {
   String? get version;
 
   /// Voice to use for speech synthesis.
-  @StringField(enumValues: ['alloy', 'echo', 'fable', 'onyx', 'nova', 'shimmer'])
+  @StringField(
+    enumValues: ['alloy', 'echo', 'fable', 'onyx', 'nova', 'shimmer'],
+  )
   String? get voice;
 
   /// Speaking speed multiplier (0.25 – 4.0). Not supported by gpt-4o-mini-tts.
@@ -58,7 +60,11 @@ const Map<String, String> audioMimeTypes = {
 };
 
 /// TTS model IDs supported by the plugin.
-const List<String> supportedTtsModels = ['tts-1', 'tts-1-hd', 'gpt-4o-mini-tts'];
+const List<String> supportedTtsModels = [
+  'tts-1',
+  'tts-1-hd',
+  'gpt-4o-mini-tts',
+];
 
 /// Returns a [ModelInfo] for a TTS (speech output) model.
 ModelInfo ttsModelInfo(String label) => ModelInfo(

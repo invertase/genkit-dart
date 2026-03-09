@@ -122,8 +122,7 @@ class OpenAIPlugin extends GenkitPlugin {
   list() async {
     try {
       final modelIds = await _fetchAvailableModels();
-      final metadata =
-          <ActionMetadata<dynamic, dynamic, dynamic, dynamic>>[];
+      final metadata = <ActionMetadata<dynamic, dynamic, dynamic, dynamic>>[];
 
       for (final modelId in modelIds) {
         final modelType = getModelType(modelId);
@@ -211,11 +210,10 @@ class OpenAIPlugin extends GenkitPlugin {
               speed: options.speed,
             ),
           );
-          return tts_lib.speechToModelResponse(
-            audioBytes,
-            responseFormat,
-            {'model': modelVersion, 'responseFormat': responseFormat},
-          );
+          return tts_lib.speechToModelResponse(audioBytes, responseFormat, {
+            'model': modelVersion,
+            'responseFormat': responseFormat,
+          });
         } catch (e, stackTrace) {
           rethrowAsGenkitException(e, stackTrace, 'TTS');
         } finally {
@@ -259,9 +257,7 @@ class OpenAIPlugin extends GenkitPlugin {
               options.visualDetailLevel,
             ),
             tools: supportsTools
-                ? modelRequest.tools
-                      ?.map(GenkitConverter.toOpenAITool)
-                      .toList()
+                ? modelRequest.tools?.map(GenkitConverter.toOpenAITool).toList()
                 : null,
             temperature: options.temperature,
             topP: options.topP,
@@ -382,5 +378,4 @@ class OpenAIPlugin extends GenkitPlugin {
       raw: response.toJson(),
     );
   }
-
 }

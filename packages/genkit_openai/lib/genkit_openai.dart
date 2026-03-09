@@ -16,17 +16,22 @@ import 'dart:async';
 
 import 'package:genkit/plugin.dart';
 
-import 'src/chat.dart' as chat;
+import 'src/audio.dart' as audio_lib;
+import 'src/chat.dart' as chat_lib;
 import 'src/openai_plugin.dart';
 
+export 'src/audio.dart' show AudioOptions, OpenAIAudioOptions, isAudioModel;
 export 'src/chat.dart' show OpenAIChatOptions, OpenAIOptions;
 export 'src/converters.dart' show GenkitConverter;
 export 'src/utils.dart'
     show
+        OpenAIClientConfig,
+        buildOpenAIClient,
         defaultModelInfo,
         getModelType,
         modelInfoFor,
         oSeriesModelInfo,
+        rethrowAsGenkitException,
         supportsTools,
         supportsVision;
 
@@ -65,11 +70,21 @@ class OpenAICompatPluginHandle {
     );
   }
 
-  /// Reference to a model
-  ModelRef<chat.OpenAIChatOptions> model(String name) {
+  /// Reference to a chat model.
+  ModelRef<chat_lib.OpenAIChatOptions> model(String name) {
     return modelRef(
       'openai/$name',
-      customOptions: chat.chatModelOptionsSchema(),
+      customOptions: chat_lib.chatModelOptionsSchema(),
+    );
+  }
+
+  /// Reference to an audio chat model (e.g. `gpt-4o-audio-preview`).
+  ///
+  /// Audio models accept text input and return both text and audio output.
+  ModelRef<audio_lib.OpenAIAudioOptions> audioModel(String name) {
+    return modelRef(
+      'openai/$name',
+      customOptions: audio_lib.audioOptionsSchema(),
     );
   }
 }

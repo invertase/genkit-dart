@@ -16,7 +16,8 @@ import 'package:genkit/plugin.dart';
 import 'package:openai_dart/openai_dart.dart' as sdk;
 
 import '../genkit_openai.dart';
-import 'chat.dart' as chat;
+import 'audio.dart' as audio;
+import 'chat.dart' as chat_lib;
 
 /// Core plugin implementation
 class OpenAIPlugin extends GenkitPlugin {
@@ -56,6 +57,15 @@ class OpenAIPlugin extends GenkitPlugin {
         for (final modelId in availableModelIds) {
           final modelType = getModelType(modelId);
 
+          if (modelType == 'audio') {
+            if (audio.isAudioModel(modelId)) {
+              actions.add(
+                audio.createAudioChatModel(modelId, null, _resolveClientConfig),
+              );
+            }
+            continue;
+          }
+
           if (modelType != 'chat' && modelType != 'unknown') {
             continue;
           }
@@ -82,14 +92,7 @@ class OpenAIPlugin extends GenkitPlugin {
   /// Fetch available model IDs from OpenAI API
   Future<List<String>> _fetchAvailableModels() async {
     final resolvedConfig = await _resolveClientConfig();
-
-    final client = sdk.OpenAIClient(
-      config: sdk.OpenAIConfig(
-        authProvider: sdk.ApiKeyProvider(resolvedConfig.apiKey),
-        baseUrl: resolvedConfig.baseUrl ?? 'https://api.openai.com/v1',
-        defaultHeaders: resolvedConfig.headers ?? const {},
-      ),
-    );
+    final client = buildOpenAIClient(resolvedConfig);
 
     try {
       final response = await client.models.list();
@@ -106,7 +109,7 @@ class OpenAIPlugin extends GenkitPlugin {
     }
   }
 
-  Future<_ResolvedClientConfig> _resolveClientConfig() async {
+  Future<OpenAIClientConfig> _resolveClientConfig() async {
     final configuredApiKey = await _resolveApiKey();
     if (configuredApiKey == null || configuredApiKey.trim().isEmpty) {
       throw GenkitException(
@@ -115,7 +118,7 @@ class OpenAIPlugin extends GenkitPlugin {
       );
     }
 
-    return _ResolvedClientConfig(
+    return OpenAIClientConfig(
       apiKey: configuredApiKey.trim(),
       baseUrl: baseUrl,
       headers: headers,
@@ -140,6 +143,20 @@ class OpenAIPlugin extends GenkitPlugin {
 
       for (final modelId in modelIds) {
         final modelType = getModelType(modelId);
+
+        if (modelType == 'audio') {
+          if (audio.isAudioModel(modelId)) {
+            modelMetadataList.add(
+              modelMetadata(
+                'openai/$modelId',
+                modelInfo: audio.audioModelInfo(modelId),
+                customOptions: audio.audioOptionsSchema(),
+              ),
+            );
+          }
+          continue;
+        }
+
         if (modelType != 'chat' && modelType != 'unknown') {
           continue;
         }
@@ -148,7 +165,7 @@ class OpenAIPlugin extends GenkitPlugin {
           modelMetadata(
             'openai/$modelId',
             modelInfo: modelInfoFor(modelId),
-            customOptions: chat.chatModelOptionsSchema(),
+            customOptions: chat_lib.chatModelOptionsSchema(),
           ),
         );
       }
@@ -166,6 +183,9 @@ class OpenAIPlugin extends GenkitPlugin {
   @override
   Action? resolve(String actionType, String name) {
     if (actionType == 'model') {
+      if (audio.isAudioModel(name)) {
+        return audio.createAudioChatModel(name, null, _resolveClientConfig);
+      }
       return _createModel(name, null);
     }
     return null;
@@ -176,30 +196,24 @@ class OpenAIPlugin extends GenkitPlugin {
 
     return Model(
       name: 'openai/$modelName',
-      customOptions: chat.chatModelOptionsSchema(),
+      customOptions: chat_lib.chatModelOptionsSchema(),
       metadata: {'model': modelInfo.toJson()},
       fn: (req, ctx) async {
         final modelRequest = req!;
-        final options = chat.parseChatModelOptions(modelRequest.config);
+        final options = chat_lib.parseChatModelOptions(modelRequest.config);
 
         final resolvedConfig = await _resolveClientConfig();
-        final client = sdk.OpenAIClient(
-          config: sdk.OpenAIConfig(
-            authProvider: sdk.ApiKeyProvider(resolvedConfig.apiKey),
-            baseUrl: resolvedConfig.baseUrl ?? 'https://api.openai.com/v1',
-            defaultHeaders: resolvedConfig.headers ?? const {},
-          ),
-        );
+        final client = buildOpenAIClient(resolvedConfig);
 
         try {
           final supports = modelInfo.supports;
           final supportsTools = supports?['tools'] == true;
 
-          final isJsonMode = chat.isJsonStructuredOutput(
+          final isJsonMode = chat_lib.isJsonStructuredOutput(
             modelRequest.output?.format,
             modelRequest.output?.contentType,
           );
-          final responseFormat = chat.buildOpenAIResponseFormat(
+          final responseFormat = chat_lib.buildOpenAIResponseFormat(
             modelRequest.output?.schema,
           );
           final request = sdk.ChatCompletionCreateRequest(
@@ -221,31 +235,14 @@ class OpenAIPlugin extends GenkitPlugin {
             user: options.user,
             responseFormat: isJsonMode ? responseFormat : null,
           );
+
           if (ctx.streamingRequested) {
             return await _handleStreaming(client, request, ctx);
           } else {
             return await _handleNonStreaming(client, request);
           }
         } catch (e, stackTrace) {
-          if (e is GenkitException) {
-            rethrow;
-          }
-
-          StatusCodes? status;
-          String? details;
-
-          if (e is sdk.ApiException) {
-            status = StatusCodes.fromHttpStatus(e.statusCode);
-            details = e.body?.toString();
-          }
-
-          throw GenkitException(
-            'OpenAI API error: $e',
-            status: status,
-            details: details ?? e.toString(),
-            underlyingException: e,
-            stackTrace: stackTrace,
-          );
+          rethrowAsGenkitException(e, stackTrace, 'chat');
         } finally {
           client.close();
         }
@@ -328,16 +325,4 @@ class OpenAIPlugin extends GenkitPlugin {
       raw: response.toJson(),
     );
   }
-}
-
-final class _ResolvedClientConfig {
-  final String apiKey;
-  final String? baseUrl;
-  final Map<String, String>? headers;
-
-  const _ResolvedClientConfig({
-    required this.apiKey,
-    required this.baseUrl,
-    required this.headers,
-  });
 }

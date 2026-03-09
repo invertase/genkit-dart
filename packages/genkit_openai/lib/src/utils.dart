@@ -273,11 +273,7 @@ final class OpenAIClientConfig {
   final String? baseUrl;
   final Map<String, String>? headers;
 
-  const OpenAIClientConfig({
-    required this.apiKey,
-    this.baseUrl,
-    this.headers,
-  });
+  const OpenAIClientConfig({required this.apiKey, this.baseUrl, this.headers});
 }
 
 /// Builds an [sdk.OpenAIClient] from an [OpenAIClientConfig].

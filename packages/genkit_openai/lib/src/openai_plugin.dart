@@ -59,7 +59,9 @@ class OpenAIPlugin extends GenkitPlugin {
 
           if (modelType == 'audio') {
             if (audio.isAudioModel(modelId)) {
-              actions.add(audio.createAudioChatModel(modelId, null, _resolveClientConfig));
+              actions.add(
+                audio.createAudioChatModel(modelId, null, _resolveClientConfig),
+              );
             }
             continue;
           }
@@ -323,7 +325,4 @@ class OpenAIPlugin extends GenkitPlugin {
       raw: response.toJson(),
     );
   }
-
 }
-
-

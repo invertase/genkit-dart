@@ -55,8 +55,17 @@ abstract class $OpenAIAudioOptions {
   /// Voice for the audio output.
   @StringField(
     enumValues: [
-      'alloy', 'ash', 'ballad', 'coral', 'echo',
-      'fable', 'nova', 'onyx', 'sage', 'shimmer', 'verse',
+      'alloy',
+      'ash',
+      'ballad',
+      'coral',
+      'echo',
+      'fable',
+      'nova',
+      'onyx',
+      'sage',
+      'shimmer',
+      'verse',
     ],
   )
   String? get voice;
@@ -77,14 +86,14 @@ typedef AudioOptions = OpenAIAudioOptions;
 bool isAudioModel(String name) => name.toLowerCase().contains('audio');
 
 ModelInfo audioModelInfo(String label) => ModelInfo(
-      label: label,
-      supports: {
-        'media': false,
-        'multiturn': true,
-        'systemRole': true,
-        'tools': false,
-      },
-    );
+  label: label,
+  supports: {
+    'media': false,
+    'multiturn': true,
+    'systemRole': true,
+    'tools': false,
+  },
+);
 
 /// Returns the [SchemanticType] for [OpenAIAudioOptions].
 SchemanticType<OpenAIAudioOptions> audioOptionsSchema() =>
@@ -125,10 +134,7 @@ Future<ModelResponse> handleChatAudioNonStreaming(
 
   try {
     final httpRequest = await httpClient.postUrl(url);
-    httpRequest.headers.set(
-      HttpHeaders.contentTypeHeader,
-      'application/json',
-    );
+    httpRequest.headers.set(HttpHeaders.contentTypeHeader, 'application/json');
     httpRequest.headers.set(
       HttpHeaders.authorizationHeader,
       'Bearer ${resolved.apiKey}',
@@ -189,7 +195,9 @@ ModelResponse buildChatAudioResponse(
     final dataUri = 'data:$mediaType;base64,$audioBase64';
     content = [
       ...message.content,
-      MediaPart(media: Media(contentType: mediaType, url: dataUri)),
+      MediaPart(
+        media: Media(contentType: mediaType, url: dataUri),
+      ),
     ];
   } else {
     content = message.content;

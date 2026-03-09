@@ -20,8 +20,7 @@ import 'src/audio.dart' as audio_lib;
 import 'src/chat.dart' as chat_lib;
 import 'src/openai_plugin.dart';
 
-export 'src/audio.dart'
-    show AudioOptions, OpenAIAudioOptions, isAudioModel;
+export 'src/audio.dart' show AudioOptions, OpenAIAudioOptions, isAudioModel;
 export 'src/chat.dart' show OpenAIChatOptions, OpenAIOptions;
 export 'src/converters.dart' show GenkitConverter;
 export 'src/utils.dart'

@@ -60,9 +60,7 @@ abstract class $OpenAISttOptions {
   /// Output format for the transcription result.
   ///
   /// One of: 'json', 'text', 'srt', 'verbose_json', 'vtt'.
-  @StringField(
-    enumValues: ['json', 'text', 'srt', 'verbose_json', 'vtt'],
-  )
+  @StringField(enumValues: ['json', 'text', 'srt', 'verbose_json', 'vtt'])
   String? get responseFormat;
 
   /// Timestamp granularities to include (requires 'verbose_json' format).
@@ -104,8 +102,7 @@ sdk.TranscriptionRequest buildTranscriptionRequest({
     prompt: _extractPromptText(request),
     responseFormat: format,
     temperature: options.temperature,
-    timestampGranularities:
-        granularities.isNotEmpty ? granularities : null,
+    timestampGranularities: granularities.isNotEmpty ? granularities : null,
   );
 }
 
